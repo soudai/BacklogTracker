@@ -47,7 +47,9 @@ func ParseEnv(reader io.Reader) (map[string]string, error) {
 			switch {
 			case value[0] == '"' && value[len(value)-1] == '"':
 				unquoted, err := strconv.Unquote(value)
-				if err == nil {
+				if err != nil {
+					value = value[1 : len(value)-1]
+				} else {
 					value = unquoted
 				}
 			case value[0] == '\'' && value[len(value)-1] == '\'':
