@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -54,6 +55,9 @@ func runInit(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	yes := flags.Bool("yes", false, "skip confirmation")
 
 	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return ExitCodeOK
+		}
 		return ExitCodeInit
 	}
 
@@ -119,6 +123,9 @@ func runReportStub(name string, args []string, stdout, stderr io.Writer) int {
 	}
 
 	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return ExitCodeOK
+		}
 		return ExitCodeInput
 	}
 
