@@ -126,9 +126,6 @@ func TestRunPeriodSummaryDryRunRendersPromptAndPersistsArtifacts(t *testing.T) {
 		"BACKLOG_BASE_URL":               "https://example.backlog.com",
 		"BACKLOG_API_KEY":                "test-backlog-key",
 		"BACKLOG_PROJECT_KEY":            "PROJ",
-		"LLM_PROVIDER":                   "gemini",
-		"GEMINI_API_KEY":                 "test-gemini-key",
-		"GEMINI_MODEL":                   "gemini-2.5-pro",
 		"SQLITE_DB_PATH":                 dbPath,
 		"PROMPT_DIR":                     promptDir,
 		"PROMPT_PREVIEW_DIR":             previewDir,
@@ -142,7 +139,7 @@ func TestRunPeriodSummaryDryRunRendersPromptAndPersistsArtifacts(t *testing.T) {
 	stderr := &bytes.Buffer{}
 	exitCode := Run(
 		context.Background(),
-		[]string{"period-summary", "--dry-run", "--project", "PROJ", "--from", "2026-03-01", "--to", "2026-03-07", "--provider", "gemini", "--env-file", envFile},
+		[]string{"period-summary", "--dry-run", "--project", "PROJ", "--from", "2026-03-01", "--to", "2026-03-07", "--env-file", envFile},
 		strings.NewReader(""),
 		stdout,
 		stderr,
@@ -205,9 +202,6 @@ func TestRunAccountReportDryRunRequiresAccount(t *testing.T) {
 		"BACKLOG_BASE_URL":    "https://example.backlog.com",
 		"BACKLOG_API_KEY":     "test-backlog-key",
 		"BACKLOG_PROJECT_KEY": "PROJ",
-		"LLM_PROVIDER":        "gemini",
-		"GEMINI_API_KEY":      "test-gemini-key",
-		"GEMINI_MODEL":        "gemini-2.5-pro",
 		"SQLITE_DB_PATH":      filepath.Join(baseDir, "data", "tracker.sqlite3"),
 		"PROMPT_DIR":          promptDir,
 		"PROMPT_PREVIEW_DIR":  filepath.Join(baseDir, "data", "prompt-previews"),
@@ -217,7 +211,7 @@ func TestRunAccountReportDryRunRequiresAccount(t *testing.T) {
 	stderr := &bytes.Buffer{}
 	exitCode := Run(
 		context.Background(),
-		[]string{"account-report", "--dry-run", "--project", "PROJ", "--provider", "gemini", "--env-file", envFile},
+		[]string{"account-report", "--dry-run", "--project", "PROJ", "--env-file", envFile},
 		strings.NewReader(""),
 		stdout,
 		stderr,

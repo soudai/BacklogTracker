@@ -3,6 +3,7 @@ package prompts
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -126,8 +127,42 @@ func TestManagerSavePreviewAndCleanupExpired(t *testing.T) {
 	if !strings.Contains(string(content), "--- SYSTEM ---") {
 		t.Fatalf("preview content = %q, want system header", string(content))
 	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat preview: %v", err)
+		}
+		if got, want := info.Mode().Perm(), os.FileMode(0o600); got != want {
+			t.Fatalf("preview file mode = %v, want %v", got, want)
+		}
+	}
 	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
 		t.Fatalf("old preview still exists, stat error = %v", err)
+	}
+}
+
+func TestManagerSavePreviewRejectsUnsafeJobID(t *testing.T) {
+	t.Parallel()
+
+	manager := Manager{
+		PreviewDir:    filepath.Join(t.TempDir(), "previews"),
+		RetentionDays: 30,
+	}
+
+	_, err := manager.SavePreview("../escape", RenderedPrompt{
+		Task:           TaskPeriodSummary,
+		System:         "system",
+		User:           "user",
+		Hash:           "hash",
+		SystemTemplate: "period_summary/system.tmpl",
+		UserTemplate:   "period_summary/user.tmpl",
+		RenderedAt:     time.Date(2026, 3, 9, 12, 0, 0, 0, time.UTC),
+	})
+	if err == nil {
+		t.Fatalf("SavePreview expected validation error")
+	}
+	if !strings.Contains(err.Error(), "jobID contains invalid path characters") {
+		t.Fatalf("SavePreview error = %q, want invalid jobID message", err.Error())
 	}
 }
 

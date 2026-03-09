@@ -95,8 +95,9 @@ func (m Manager) Render(task Task, data any) (RenderedPrompt, error) {
 }
 
 func (m Manager) SavePreview(jobID string, rendered RenderedPrompt) (string, error) {
-	if strings.TrimSpace(jobID) == "" {
-		return "", fmt.Errorf("jobID is required")
+	safeJobID, err := validatePreviewJobID(jobID)
+	if err != nil {
+		return "", err
 	}
 	if err := validateTask(rendered.Task); err != nil {
 		return "", err
@@ -114,13 +115,29 @@ func (m Manager) SavePreview(jobID string, rendered RenderedPrompt) (string, err
 		return "", fmt.Errorf("create preview directory: %w", err)
 	}
 
-	fileName := fmt.Sprintf("%s-%s.txt", jobID, rendered.RenderedAt.UTC().Format("20060102T150405Z"))
+	fileName := fmt.Sprintf("%s-%s.txt", safeJobID, rendered.RenderedAt.UTC().Format("20060102T150405Z"))
 	filePath := filepath.Join(taskDir, fileName)
-	if err := os.WriteFile(filePath, []byte(rendered.previewContents(jobID)), 0o644); err != nil {
+	if err := os.WriteFile(filePath, []byte(rendered.previewContents(safeJobID)), 0o600); err != nil {
 		return "", fmt.Errorf("write prompt preview: %w", err)
 	}
 
 	return filePath, nil
+}
+
+func validatePreviewJobID(jobID string) (string, error) {
+	trimmed := strings.TrimSpace(jobID)
+	if trimmed == "" {
+		return "", fmt.Errorf("jobID is required")
+	}
+
+	if strings.Contains(trimmed, "..") ||
+		strings.Contains(trimmed, "/") ||
+		strings.Contains(trimmed, "\\") ||
+		strings.ContainsRune(trimmed, filepath.Separator) {
+		return "", fmt.Errorf("jobID contains invalid path characters")
+	}
+
+	return trimmed, nil
 }
 
 func (m Manager) CleanupExpired() error {

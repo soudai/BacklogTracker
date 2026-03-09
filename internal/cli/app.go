@@ -164,12 +164,12 @@ func runReportStub(ctx context.Context, name string, args []string, stdout, stde
 		fmt.Fprintf(stderr, "parse config: %v\n", err)
 		return ExitCodeInput
 	}
-	if err := cfg.ValidateForReport(); err != nil {
-		fmt.Fprintf(stderr, "invalid config: %v\n", err)
-		return ExitCodeInput
-	}
 
 	if *dryRun {
+		if err := validateDryRunConfig(cfg); err != nil {
+			fmt.Fprintf(stderr, "invalid dry-run config: %v\n", err)
+			return ExitCodeInput
+		}
 		return runPromptDryRun(ctx, reportDryRunOptions{
 			CommandName: name,
 			BaseDir:     baseDir,
@@ -184,6 +184,11 @@ func runReportStub(ctx context.Context, name string, args []string, stdout, stde
 			StdOut:      stdout,
 			StdErr:      stderr,
 		})
+	}
+
+	if err := cfg.ValidateForReport(); err != nil {
+		fmt.Fprintf(stderr, "invalid config: %v\n", err)
+		return ExitCodeInput
 	}
 
 	fmt.Fprintf(stdout, "%s is not implemented on this branch yet.\n", name)
@@ -355,6 +360,30 @@ func defaultString(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func validateDryRunConfig(cfg config.Config) error {
+	required := []struct {
+		name  string
+		value string
+	}{
+		{name: "BACKLOG_PROJECT_KEY", value: cfg.BacklogProjectKey},
+		{name: "SQLITE_DB_PATH", value: cfg.SQLiteDBPath},
+		{name: "PROMPT_DIR", value: cfg.PromptDir},
+		{name: "PROMPT_PREVIEW_DIR", value: cfg.PromptPreviewDir},
+	}
+
+	var missing []string
+	for _, setting := range required {
+		if strings.TrimSpace(setting.value) == "" {
+			missing = append(missing, setting.name)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("missing required settings: %s", strings.Join(missing, ", "))
+	}
+
+	return nil
 }
 
 func printUsage(out io.Writer) {
