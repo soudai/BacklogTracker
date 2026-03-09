@@ -157,9 +157,9 @@ func TestNewFromConfigSelectsConfiguredProvider(t *testing.T) {
 	t.Parallel()
 
 	testCases := []struct {
-		name string
-		cfg  config.Config
-		want string
+		name   string
+		cfg    config.Config
+		assert func(*testing.T, Provider)
 	}{
 		{
 			name: "chatgpt",
@@ -169,7 +169,12 @@ func TestNewFromConfigSelectsConfiguredProvider(t *testing.T) {
 				OpenAIAPIKey:      "openai-key",
 				OpenAIModel:       "gpt-test",
 			},
-			want: "*llm.openAIProvider",
+			assert: func(t *testing.T, provider Provider) {
+				t.Helper()
+				if _, ok := provider.(*openAIProvider); !ok {
+					t.Fatalf("provider type = %T, want *openAIProvider", provider)
+				}
+			},
 		},
 		{
 			name: "gemini",
@@ -179,7 +184,12 @@ func TestNewFromConfigSelectsConfiguredProvider(t *testing.T) {
 				GeminiAPIKey:      "gemini-key",
 				GeminiModel:       "gemini-test",
 			},
-			want: "*llm.geminiProvider",
+			assert: func(t *testing.T, provider Provider) {
+				t.Helper()
+				if _, ok := provider.(*geminiProvider); !ok {
+					t.Fatalf("provider type = %T, want *geminiProvider", provider)
+				}
+			},
 		},
 	}
 
@@ -192,9 +202,7 @@ func TestNewFromConfigSelectsConfiguredProvider(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewFromConfig returned error: %v", err)
 			}
-			if got := providerTypeName(provider); got != testCase.want {
-				t.Fatalf("provider type = %s, want %s", got, testCase.want)
-			}
+			testCase.assert(t, provider)
 		})
 	}
 }
@@ -333,16 +341,5 @@ func writeJSON(t *testing.T, w http.ResponseWriter, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(value); err != nil {
 		t.Fatalf("encode json: %v", err)
-	}
-}
-
-func providerTypeName(provider Provider) string {
-	switch provider.(type) {
-	case *openAIProvider:
-		return "*llm.openAIProvider"
-	case *geminiProvider:
-		return "*llm.geminiProvider"
-	default:
-		return "<unknown>"
 	}
 }
