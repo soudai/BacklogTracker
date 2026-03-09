@@ -14,6 +14,8 @@ import (
 
 type Task string
 
+const previewJobIDAllowedChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+
 const (
 	TaskPeriodSummary Task = "period_summary"
 	TaskAccountReport Task = "account_report"
@@ -130,11 +132,10 @@ func validatePreviewJobID(jobID string) (string, error) {
 		return "", fmt.Errorf("jobID is required")
 	}
 
-	if strings.Contains(trimmed, "..") ||
-		strings.Contains(trimmed, "/") ||
-		strings.Contains(trimmed, "\\") ||
-		strings.ContainsRune(trimmed, filepath.Separator) {
-		return "", fmt.Errorf("jobID contains invalid path characters")
+	for _, r := range trimmed {
+		if !strings.ContainsRune(previewJobIDAllowedChars, r) {
+			return "", fmt.Errorf("jobID contains invalid characters; only letters, digits, '.', '_', and '-' are allowed")
+		}
 	}
 
 	return trimmed, nil
@@ -167,7 +168,7 @@ func (m Manager) CleanupExpired() error {
 			return statErr
 		}
 		if info.ModTime().UTC().Before(cutoff) {
-			if removeErr := os.Remove(path); removeErr != nil {
+			if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
 				return fmt.Errorf("remove expired preview %s: %w", path, removeErr)
 			}
 		}
@@ -224,7 +225,11 @@ func executeTemplate(tmpl *template.Template, data any) (string, error) {
 	if err := tmpl.Execute(&buffer, data); err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(buffer.String()), nil
+	rendered := buffer.String()
+	if strings.HasSuffix(rendered, "\n") {
+		rendered = strings.TrimSuffix(rendered, "\n")
+	}
+	return rendered, nil
 }
 
 func hashPrompt(systemPrompt, userPrompt string) string {
@@ -267,10 +272,13 @@ func removeEmptyDirectories(root string) error {
 		}
 		entries, err := os.ReadDir(current)
 		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
 			return err
 		}
 		if len(entries) == 0 {
-			if err := os.Remove(current); err != nil {
+			if err := os.Remove(current); err != nil && !os.IsNotExist(err) {
 				return err
 			}
 		}

@@ -49,6 +49,9 @@ func TestManagerRenderPeriodSummaryPrompt(t *testing.T) {
 	if got, want := rendered.SystemTemplate, "period_summary/system.tmpl"; got != want {
 		t.Fatalf("rendered.SystemTemplate = %q, want %q", got, want)
 	}
+	if strings.HasPrefix(rendered.System, " ") || strings.HasSuffix(rendered.System, " ") {
+		t.Fatalf("rendered.System unexpectedly trimmed spaces: %q", rendered.System)
+	}
 }
 
 func TestManagerRenderAccountReportPrompt(t *testing.T) {
@@ -161,8 +164,51 @@ func TestManagerSavePreviewRejectsUnsafeJobID(t *testing.T) {
 	if err == nil {
 		t.Fatalf("SavePreview expected validation error")
 	}
-	if !strings.Contains(err.Error(), "jobID contains invalid path characters") {
+	if !strings.Contains(err.Error(), "jobID contains invalid characters") {
 		t.Fatalf("SavePreview error = %q, want invalid jobID message", err.Error())
+	}
+}
+
+func TestManagerSavePreviewRejectsWindowsUnsafeJobID(t *testing.T) {
+	t.Parallel()
+
+	manager := Manager{
+		PreviewDir:    filepath.Join(t.TempDir(), "previews"),
+		RetentionDays: 30,
+	}
+
+	_, err := manager.SavePreview("job:1", RenderedPrompt{
+		Task:           TaskPeriodSummary,
+		System:         "system",
+		User:           "user",
+		Hash:           "hash",
+		SystemTemplate: "period_summary/system.tmpl",
+		UserTemplate:   "period_summary/user.tmpl",
+		RenderedAt:     time.Date(2026, 3, 9, 12, 0, 0, 0, time.UTC),
+	})
+	if err == nil {
+		t.Fatalf("SavePreview expected validation error")
+	}
+	if !strings.Contains(err.Error(), "jobID contains invalid characters") {
+		t.Fatalf("SavePreview error = %q, want invalid character message", err.Error())
+	}
+}
+
+func TestExecuteTemplatePreservesWhitespaceExceptTrailingNewline(t *testing.T) {
+	t.Parallel()
+
+	tmpl, err := parseTemplateFile(writeTemplateFile(t, t.TempDir(), "sample.tmpl", "  hello {{ .Name }}  \n"))
+	if err != nil {
+		t.Fatalf("parseTemplateFile returned error: %v", err)
+	}
+
+	rendered, err := executeTemplate(tmpl, map[string]string{"Name": "world"})
+	if err != nil {
+		t.Fatalf("executeTemplate returned error: %v", err)
+	}
+
+	if got, want := rendered, "  hello world  "; got != want {
+		t.Fatalf("executeTemplate = %q, want %q", got, want)
 	}
 }
 
@@ -204,4 +250,14 @@ func writePromptFiles(t *testing.T, baseDir string, task Task) {
 	if err := os.WriteFile(filepath.Join(taskDir, "user.tmpl"), []byte(userTemplate), 0o644); err != nil {
 		t.Fatalf("write user template: %v", err)
 	}
+}
+
+func writeTemplateFile(t *testing.T, dir, name, content string) string {
+	t.Helper()
+
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write template file: %v", err)
+	}
+	return path
 }
