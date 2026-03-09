@@ -41,7 +41,7 @@ func TestServiceRunDryRunPersistsArtifactsAndUsesLatestComments(t *testing.T) {
 		result: llm.GenerateResult{
 			Output: llm.AccountReportOutput{
 				ReportType: "account_report",
-				Account:    llm.AccountReportAccount{ID: "yamada", DisplayName: "山田 太郎"},
+				Account:    llm.AccountReportAccount{ID: "llm-user", DisplayName: "LLM User"},
 				Summary:    "summary",
 				Issues: []llm.AccountReportIssue{
 					{
@@ -57,7 +57,7 @@ func TestServiceRunDryRunPersistsArtifactsAndUsesLatestComments(t *testing.T) {
 					},
 				},
 			},
-			OutputJSON:  []byte(`{"reportType":"account_report","account":{"id":"yamada","displayName":"山田 太郎"},"summary":"summary","issues":[{"issueKey":"PROJ-1","title":"Issue title","status":"Open","summary":"Issue summary","responseSuggestion":{"message":"Reply","confidence":"high","needsConfirmation":false}}]}`),
+			OutputJSON:  []byte(`{"reportType":"account_report","account":{"id":"llm-user","displayName":"LLM User"},"summary":"summary","issues":[{"issueKey":"PROJ-1","title":"Issue title","status":"Open","summary":"Issue summary","responseSuggestion":{"message":"Reply","confidence":"high","needsConfirmation":false}}]}`),
 			RawResponse: []byte(`{"provider":"stub"}`),
 		},
 	}
@@ -79,6 +79,13 @@ func TestServiceRunDryRunPersistsArtifactsAndUsesLatestComments(t *testing.T) {
 					Summary:     "Issue title",
 					Description: "Private body",
 					Status:      &backlogclient.Status{Name: "Open"},
+					UpdatedAt:   now,
+				},
+				{
+					IssueKey:    "PROJ-2",
+					Summary:     "Issue title 2",
+					Description: "Another private body",
+					Status:      &backlogclient.Status{Name: "In Progress"},
 					UpdatedAt:   now,
 				},
 			},
@@ -128,6 +135,13 @@ func TestServiceRunDryRunPersistsArtifactsAndUsesLatestComments(t *testing.T) {
 	if _, err := os.Stat(result.ReportPath); err != nil {
 		t.Fatalf("report file missing: %v", err)
 	}
+	reportContent, err := os.ReadFile(result.ReportPath)
+	if err != nil {
+		t.Fatalf("ReadFile(report) returned error: %v", err)
+	}
+	if !strings.Contains(string(reportContent), "- issueCount: 2\n") {
+		t.Fatalf("report = %s, want issueCount based on collected issues", string(reportContent))
+	}
 
 	jobRun, err := store.JobRuns().GetByJobID(context.Background(), result.JobID)
 	if err != nil {
@@ -173,6 +187,11 @@ func TestServiceRunSendsSanitizedSlackMessage(t *testing.T) {
 					Summary:     "Issue title",
 					Description: "Private backlog body",
 				},
+				{
+					IssueKey:    "PROJ-2",
+					Summary:     "Issue title 2",
+					Description: "Another private backlog body",
+				},
 			},
 		},
 		Comments: &fakeCommentLister{
@@ -192,7 +211,7 @@ func TestServiceRunSendsSanitizedSlackMessage(t *testing.T) {
 			result: llm.GenerateResult{
 				Output: llm.AccountReportOutput{
 					ReportType: "account_report",
-					Account:    llm.AccountReportAccount{ID: "yamada", DisplayName: "山田 太郎"},
+					Account:    llm.AccountReportAccount{ID: "llm-user", DisplayName: "LLM User"},
 					Summary:    "summary alice@example.com +81 90-1234-5678",
 					Issues: []llm.AccountReportIssue{
 						{
@@ -208,7 +227,7 @@ func TestServiceRunSendsSanitizedSlackMessage(t *testing.T) {
 						},
 					},
 				},
-				OutputJSON:  []byte(`{"reportType":"account_report","account":{"id":"yamada","displayName":"山田 太郎"},"summary":"summary alice@example.com +81 90-1234-5678","issues":[{"issueKey":"PROJ-1","title":"Issue title","status":"Open","summary":"Issue summary alice@example.com","responseSuggestion":{"message":"Reply to alice@example.com and call +81 90-1234-5678","confidence":"medium","needsConfirmation":true}}]}`),
+				OutputJSON:  []byte(`{"reportType":"account_report","account":{"id":"llm-user","displayName":"LLM User"},"summary":"summary alice@example.com +81 90-1234-5678","issues":[{"issueKey":"PROJ-1","title":"Issue title","status":"Open","summary":"Issue summary alice@example.com","responseSuggestion":{"message":"Reply to alice@example.com and call +81 90-1234-5678","confidence":"medium","needsConfirmation":true}}]}`),
 				RawResponse: []byte(`{"provider":"stub"}`),
 			},
 		},
@@ -242,6 +261,15 @@ func TestServiceRunSendsSanitizedSlackMessage(t *testing.T) {
 	}
 	if !strings.Contains(serialized, "[redacted-email]") || !strings.Contains(serialized, "[redacted-phone]") {
 		t.Fatalf("slack payload = %s, want masked personal data", serialized)
+	}
+	if !strings.Contains(serialized, "山田 太郎") || !strings.Contains(serialized, "yamada") {
+		t.Fatalf("slack payload = %s, want resolved backlog account metadata", serialized)
+	}
+	if strings.Contains(serialized, "LLM User") || strings.Contains(serialized, "llm-user") {
+		t.Fatalf("slack payload = %s, should not use LLM account metadata", serialized)
+	}
+	if !strings.Contains(serialized, "対象件数") || !strings.Contains(serialized, "2") {
+		t.Fatalf("slack payload = %s, want collected issue count", serialized)
 	}
 }
 

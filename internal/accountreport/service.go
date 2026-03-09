@@ -278,7 +278,7 @@ func (s Service) Run(ctx context.Context, input Input) (result Result, err error
 		return fail(KindStorage, fmt.Errorf("update raw_response_path: %w", err))
 	}
 
-	result.ReportPath, err = saveReport(s.BaseDir, s.Config.ReportDir, result.JobID, s.Config, input, account, output, startedAt)
+	result.ReportPath, err = saveReport(s.BaseDir, s.Config.ReportDir, result.JobID, s.Config, input, account, result.IssueCount, output, startedAt)
 	if err != nil {
 		return fail(KindStorage, fmt.Errorf("save report: %w", err))
 	}
@@ -292,7 +292,7 @@ func (s Service) Run(ctx context.Context, input Input) (result Result, err error
 		if s.Notifier == nil {
 			return fail(KindSlack, fmt.Errorf("slack notifier is required"))
 		}
-		message := BuildSlackMessage(s.Config, input, output)
+		message := BuildSlackMessage(s.Config, input, account, result.IssueCount, output)
 		response, notifyErr := s.Notifier.Send(ctx, message)
 		if notifyErr != nil {
 			saveErr := s.Store.NotificationLogs().Save(ctx, sqlite.NotificationLog{
@@ -359,15 +359,16 @@ func (s Service) buildIssuesJSON(ctx context.Context, issues []backlogclient.Iss
 	return string(data), nil
 }
 
-func BuildSlackMessage(cfg config.Config, input Input, output llm.AccountReportOutput) notificationslack.Message {
-	accountLabel := output.Account.DisplayName
-	if strings.TrimSpace(accountLabel) == "" {
-		accountLabel = output.Account.ID
+func BuildSlackMessage(cfg config.Config, input Input, account backlogclient.User, issueCount int, output llm.AccountReportOutput) notificationslack.Message {
+	accountLabel := displayName(account)
+	accountID := sanitizeSlackText(account.UserID)
+	if accountID == "" {
+		accountID = sanitizeSlackText(accountLabel)
 	}
 	summary := sanitizeSlackText(output.Summary)
 	textLines := []string{
 		fmt.Sprintf("[%s] %s の担当課題レポート", cfg.BacklogProjectKey, accountLabel),
-		fmt.Sprintf("対象件数: %d", len(output.Issues)),
+		fmt.Sprintf("対象件数: %d", issueCount),
 		fmt.Sprintf("期間: %s - %s", formatOptionalDate(input.From), formatOptionalDate(input.To)),
 		fmt.Sprintf("概要: %s", summary),
 	}
@@ -386,11 +387,11 @@ func BuildSlackMessage(cfg config.Config, input Input, output llm.AccountReportO
 			"fields": []map[string]any{
 				{
 					"type": "mrkdwn",
-					"text": fmt.Sprintf("*アカウント*\n%s (`%s`)", truncateSlackMarkdown(sanitizeSlackText(accountLabel), 80), sanitizeSlackText(output.Account.ID)),
+					"text": fmt.Sprintf("*アカウント*\n%s (`%s`)", truncateSlackMarkdown(sanitizeSlackText(accountLabel), 80), accountID),
 				},
 				{
 					"type": "mrkdwn",
-					"text": fmt.Sprintf("*対象件数*\n%d", len(output.Issues)),
+					"text": fmt.Sprintf("*対象件数*\n%d", issueCount),
 				},
 			},
 		},
@@ -456,20 +457,20 @@ func buildIssueSlackText(issue llm.AccountReportIssue) string {
 	return strings.Join(lines, "\n")
 }
 
-func saveReport(baseDir, reportDir, jobID string, cfg config.Config, input Input, account backlogclient.User, output llm.AccountReportOutput, now time.Time) (string, error) {
+func saveReport(baseDir, reportDir, jobID string, cfg config.Config, input Input, account backlogclient.User, issueCount int, output llm.AccountReportOutput, now time.Time) (string, error) {
 	targetDir := filepath.Join(config.ResolvePath(baseDir, reportDir), string(prompts.TaskAccountReport))
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return "", fmt.Errorf("create report directory: %w", err)
 	}
 
 	filePath := filepath.Join(targetDir, fmt.Sprintf("%s-%s.md", jobID, now.UTC().Format("20060102T150405Z")))
-	if err := os.WriteFile(filePath, []byte(buildReportMarkdown(cfg, input, account, output, now)), 0o600); err != nil {
+	if err := os.WriteFile(filePath, []byte(buildReportMarkdown(cfg, input, account, issueCount, output, now)), 0o600); err != nil {
 		return "", fmt.Errorf("write report file: %w", err)
 	}
 	return filePath, nil
 }
 
-func buildReportMarkdown(cfg config.Config, input Input, account backlogclient.User, output llm.AccountReportOutput, generatedAt time.Time) string {
+func buildReportMarkdown(cfg config.Config, input Input, account backlogclient.User, issueCount int, output llm.AccountReportOutput, generatedAt time.Time) string {
 	var builder strings.Builder
 	builder.WriteString("# Account Report\n\n")
 	builder.WriteString(fmt.Sprintf("- project: %s\n", cfg.BacklogProjectKey))
@@ -479,7 +480,7 @@ func buildReportMarkdown(cfg config.Config, input Input, account backlogclient.U
 	builder.WriteString(fmt.Sprintf("- accountName: %s\n", displayName(account)))
 	builder.WriteString(fmt.Sprintf("- from: %s\n", formatOptionalDate(input.From)))
 	builder.WriteString(fmt.Sprintf("- to: %s\n", formatOptionalDate(input.To)))
-	builder.WriteString(fmt.Sprintf("- issueCount: %d\n\n", len(output.Issues)))
+	builder.WriteString(fmt.Sprintf("- issueCount: %d\n\n", issueCount))
 	builder.WriteString("## Summary\n\n")
 	builder.WriteString(output.Summary)
 	builder.WriteString("\n\n## Issues\n\n")
