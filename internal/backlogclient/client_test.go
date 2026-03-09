@@ -3,6 +3,7 @@ package backlogclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -312,6 +313,14 @@ func TestClientClassifiesHTTPFailures(t *testing.T) {
 			_, err = client.CheckConnection(context.Background(), "PROJ")
 			if err == nil {
 				t.Fatalf("CheckConnection expected error")
+			}
+
+			var httpErr *HTTPStatusError
+			if !errors.As(err, &httpErr) {
+				t.Fatalf("error = %v, want HTTPStatusError", err)
+			}
+			if strings.Contains(httpErr.URL, "apiKey=") {
+				t.Fatalf("HTTPStatusError.URL leaked query string: %q", httpErr.URL)
 			}
 
 			statusCode, ok := StatusCode(err)

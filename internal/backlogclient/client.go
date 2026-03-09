@@ -489,7 +489,7 @@ func (c *statusCheckingHTTPClient) Do(req *http.Request) (*http.Response, error)
 		Status:     resp.Status,
 		StatusCode: resp.StatusCode,
 		Method:     req.Method,
-		URL:        req.URL.String(),
+		URL:        sanitizeURL(req.URL.String()),
 		Body:       bodySummary,
 	}
 }

@@ -75,6 +75,7 @@ func sanitizeURL(raw string) string {
 	parsed, err := url.Parse(raw)
 	if err != nil {
 		prefix, _, _ := strings.Cut(raw, "?")
+		prefix, _, _ = strings.Cut(prefix, "#")
 		return prefix
 	}
 
