@@ -37,6 +37,7 @@ func TestServiceRunDryRunPersistsArtifactsAndUsesLatestComments(t *testing.T) {
 		{Content: "newer comment", CreatedAt: now.Add(-2 * time.Hour), CreatedUser: &backlogclient.User{UserID: "bob"}},
 		{Content: "latest comment", CreatedAt: now.Add(-time.Hour), CreatedUser: &backlogclient.User{UserID: "carol"}},
 	}
+	notifier := &fakeNotifier{}
 	llmProvider := &fakeLLMProvider{
 		result: llm.GenerateResult{
 			Output: llm.AccountReportOutput{
@@ -102,6 +103,7 @@ func TestServiceRunDryRunPersistsArtifactsAndUsesLatestComments(t *testing.T) {
 			Now:           func() time.Time { return now },
 		},
 		LLMProvider:     llmProvider,
+		Notifier:        notifier,
 		Store:           store,
 		SaveRawResponse: llm.SaveRawResponse,
 		Now:             func() time.Time { return now },
@@ -119,6 +121,9 @@ func TestServiceRunDryRunPersistsArtifactsAndUsesLatestComments(t *testing.T) {
 	}
 	if result.NotificationSent {
 		t.Fatalf("NotificationSent = true, want false")
+	}
+	if notifier.calls != 0 {
+		t.Fatalf("notifier.calls = %d, want 0", notifier.calls)
 	}
 	if strings.Contains(llmProvider.lastRequest.UserPrompt, "oldest comment") {
 		t.Fatalf("user prompt unexpectedly contains trimmed comment: %q", llmProvider.lastRequest.UserPrompt)
@@ -152,6 +157,14 @@ func TestServiceRunDryRunPersistsArtifactsAndUsesLatestComments(t *testing.T) {
 	}
 	if jobRun.TargetAccount == nil || *jobRun.TargetAccount != "yamada" {
 		t.Fatalf("jobRun.TargetAccount = %v, want yamada", jobRun.TargetAccount)
+	}
+
+	notificationLogs, err := store.NotificationLogs().ListByJobID(context.Background(), result.JobID)
+	if err != nil {
+		t.Fatalf("ListByJobID returned error: %v", err)
+	}
+	if len(notificationLogs) != 0 {
+		t.Fatalf("notification log count = %d, want 0", len(notificationLogs))
 	}
 }
 

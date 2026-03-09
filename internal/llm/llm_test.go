@@ -153,6 +153,67 @@ func TestGeminiProviderGenerateAccountReport(t *testing.T) {
 	}
 }
 
+func TestNewFromConfigSelectsConfiguredProvider(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name string
+		cfg  config.Config
+		want string
+	}{
+		{
+			name: "chatgpt",
+			cfg: config.Config{
+				LLMProvider:       config.ProviderChatGPT,
+				LLMTimeoutSeconds: 10,
+				OpenAIAPIKey:      "openai-key",
+				OpenAIModel:       "gpt-test",
+			},
+			want: "*llm.openAIProvider",
+		},
+		{
+			name: "gemini",
+			cfg: config.Config{
+				LLMProvider:       config.ProviderGemini,
+				LLMTimeoutSeconds: 10,
+				GeminiAPIKey:      "gemini-key",
+				GeminiModel:       "gemini-test",
+			},
+			want: "*llm.geminiProvider",
+		},
+	}
+
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			provider, err := NewFromConfig(testCase.cfg)
+			if err != nil {
+				t.Fatalf("NewFromConfig returned error: %v", err)
+			}
+			if got := providerTypeName(provider); got != testCase.want {
+				t.Fatalf("provider type = %s, want %s", got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestNewFromConfigRejectsUnsupportedProvider(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewFromConfig(config.Config{
+		LLMProvider:       "unsupported",
+		LLMTimeoutSeconds: 10,
+	})
+	if err == nil {
+		t.Fatalf("NewFromConfig expected error")
+	}
+	if got, want := err.Error(), `unsupported LLM provider "unsupported"`; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+}
+
 func assertGeminiRequestBody(t *testing.T, body io.Reader) {
 	t.Helper()
 
@@ -272,5 +333,16 @@ func writeJSON(t *testing.T, w http.ResponseWriter, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(value); err != nil {
 		t.Fatalf("encode json: %v", err)
+	}
+}
+
+func providerTypeName(provider Provider) string {
+	switch provider.(type) {
+	case *openAIProvider:
+		return "*llm.openAIProvider"
+	case *geminiProvider:
+		return "*llm.geminiProvider"
+	default:
+		return "<unknown>"
 	}
 }
