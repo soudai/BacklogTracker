@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -79,5 +81,31 @@ func TestRunCommandRouting(t *testing.T) {
 				t.Fatalf("stderr = %q, want substring %q", stderr.String(), testCase.stderrContains)
 			}
 		})
+	}
+}
+
+func TestRunInitReturnsExitCodeInitOnMigrationError(t *testing.T) {
+	t.Parallel()
+
+	envFile := filepath.Join(t.TempDir(), ".env.test")
+	if err := os.WriteFile(envFile, []byte("MIGRATION_DIR=/path/that/does/not/exist\n"), 0o644); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	exitCode := Run(
+		context.Background(),
+		[]string{"init", "--migrate-only", "--db-path", filepath.Join(t.TempDir(), "tracker.sqlite3"), "--env-file", envFile},
+		strings.NewReader(""),
+		stdout,
+		stderr,
+	)
+
+	if exitCode != ExitCodeInit {
+		t.Fatalf("Run exit code = %d, want %d", exitCode, ExitCodeInit)
+	}
+	if !strings.Contains(stderr.String(), "init failed:") {
+		t.Fatalf("stderr = %q, want init failure message", stderr.String())
 	}
 }
