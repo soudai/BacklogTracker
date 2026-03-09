@@ -12,6 +12,7 @@ import (
 
 	"github.com/soudai/BacklogTracker/internal/config"
 	"github.com/soudai/BacklogTracker/internal/initconfig"
+	"github.com/soudai/BacklogTracker/internal/llm"
 	"github.com/soudai/BacklogTracker/internal/prompts"
 	"github.com/soudai/BacklogTracker/internal/storage/sqlite"
 )
@@ -19,8 +20,14 @@ import (
 const (
 	ExitCodeOK      = 0
 	ExitCodeInput   = 1
+	ExitCodeLLM     = 3
 	ExitCodeStorage = 5
 	ExitCodeInit    = 6
+)
+
+var (
+	newLLMProvider  = llm.NewFromConfig
+	saveRawResponse = llm.SaveRawResponse
 )
 
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -222,6 +229,11 @@ func runPromptDryRun(ctx context.Context, opts reportDryRunOptions) int {
 		fmt.Fprintf(opts.StdErr, "dry-run failed: %v\n", err)
 		return ExitCodeInput
 	}
+	outputSchemaJSON, err := prompts.OutputSchemaJSON(task)
+	if err != nil {
+		fmt.Fprintf(opts.StdErr, "dry-run failed: %v\n", err)
+		return ExitCodeInput
+	}
 
 	now := time.Now().UTC()
 	manager := prompts.Manager{
@@ -246,17 +258,42 @@ func runPromptDryRun(ctx context.Context, opts reportDryRunOptions) int {
 		return ExitCodeStorage
 	}
 
-	if err := savePromptDryRun(ctx, opts, task, jobID, previewPath, rendered, now); err != nil {
+	provider, err := newLLMProvider(opts.Config)
+	if err != nil {
+		fmt.Fprintf(opts.StdErr, "dry-run failed: %v\n", err)
+		return ExitCodeInput
+	}
+	result, err := provider.Generate(ctx, llm.GenerateRequest{
+		Task:         task,
+		SystemPrompt: rendered.System,
+		UserPrompt:   rendered.User,
+		SchemaJSON:   outputSchemaJSON,
+	})
+	if err != nil {
+		fmt.Fprintf(opts.StdErr, "dry-run failed: %v\n", err)
+		return ExitCodeLLM
+	}
+
+	rawResponsePath, err := saveRawResponse(opts.BaseDir, opts.Config.RawResponseDir, jobID, opts.Config.LLMProvider, task, result.RawResponse, now)
+	if err != nil {
 		fmt.Fprintf(opts.StdErr, "dry-run failed: %v\n", err)
 		return ExitCodeStorage
 	}
 
-	fmt.Fprintf(opts.StdOut, "job_id: %s\nprompt_hash: %s\npreview_path: %s\n\n", jobID, rendered.Hash, previewPath)
+	if err := savePromptDryRun(ctx, opts, task, jobID, previewPath, rawResponsePath, rendered, now); err != nil {
+		fmt.Fprintf(opts.StdErr, "dry-run failed: %v\n", err)
+		return ExitCodeStorage
+	}
+
+	fmt.Fprintf(opts.StdOut, "job_id: %s\nprompt_hash: %s\npreview_path: %s\nraw_response_path: %s\n\n", jobID, rendered.Hash, previewPath, rawResponsePath)
 	fmt.Fprintln(opts.StdOut, "--- SYSTEM ---")
 	fmt.Fprintln(opts.StdOut, rendered.System)
 	fmt.Fprintln(opts.StdOut)
 	fmt.Fprintln(opts.StdOut, "--- USER ---")
 	fmt.Fprintln(opts.StdOut, rendered.User)
+	fmt.Fprintln(opts.StdOut)
+	fmt.Fprintln(opts.StdOut, "--- LLM OUTPUT ---")
+	fmt.Fprintln(opts.StdOut, string(result.OutputJSON))
 	return ExitCodeOK
 }
 
@@ -299,7 +336,7 @@ func buildPromptTemplateData(task prompts.Task, opts reportDryRunOptions) (map[s
 	}
 }
 
-func savePromptDryRun(ctx context.Context, opts reportDryRunOptions, task prompts.Task, jobID, previewPath string, rendered prompts.RenderedPrompt, now time.Time) error {
+func savePromptDryRun(ctx context.Context, opts reportDryRunOptions, task prompts.Task, jobID, previewPath, rawResponsePath string, rendered prompts.RenderedPrompt, now time.Time) error {
 	store, err := sqlite.Open(config.ResolvePath(opts.BaseDir, opts.Config.SQLiteDBPath))
 	if err != nil {
 		return fmt.Errorf("open sqlite store: %w", err)
@@ -315,16 +352,17 @@ func savePromptDryRun(ctx context.Context, opts reportDryRunOptions, task prompt
 	finishedAt := now
 
 	if err := store.JobRuns().Save(ctx, sqlite.JobRun{
-		JobID:         jobID,
-		JobType:       string(task),
-		Provider:      string(opts.Config.LLMProvider),
-		ProjectKey:    opts.Config.BacklogProjectKey,
-		TargetAccount: targetAccount,
-		Status:        "completed",
-		PromptName:    &promptName,
-		PromptHash:    &promptHash,
-		StartedAt:     now,
-		FinishedAt:    &finishedAt,
+		JobID:           jobID,
+		JobType:         string(task),
+		Provider:        string(opts.Config.LLMProvider),
+		ProjectKey:      opts.Config.BacklogProjectKey,
+		TargetAccount:   targetAccount,
+		Status:          "completed",
+		PromptName:      &promptName,
+		PromptHash:      &promptHash,
+		RawResponsePath: stringPointer(rawResponsePath),
+		StartedAt:       now,
+		FinishedAt:      &finishedAt,
 	}); err != nil {
 		return fmt.Errorf("save job_run: %w", err)
 	}
@@ -369,6 +407,7 @@ func validateDryRunConfig(cfg config.Config) error {
 	}{
 		{name: "BACKLOG_PROJECT_KEY", value: cfg.BacklogProjectKey},
 		{name: "SQLITE_DB_PATH", value: cfg.SQLiteDBPath},
+		{name: "RAW_RESPONSE_DIR", value: cfg.RawResponseDir},
 		{name: "PROMPT_DIR", value: cfg.PromptDir},
 		{name: "PROMPT_PREVIEW_DIR", value: cfg.PromptPreviewDir},
 	}
@@ -383,7 +422,7 @@ func validateDryRunConfig(cfg config.Config) error {
 		return fmt.Errorf("missing required settings: %s", strings.Join(missing, ", "))
 	}
 
-	return nil
+	return cfg.ValidateProviderCredentials()
 }
 
 func printUsage(out io.Writer) {

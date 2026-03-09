@@ -91,3 +91,36 @@ func TestValidateForInitRejectsPlaceholderValues(t *testing.T) {
 		t.Fatalf("ValidateForInit expected placeholder rejection")
 	}
 }
+
+func TestNewParsesLLMRuntimeSettings(t *testing.T) {
+	cfg, err := New(map[string]string{
+		"LLM_PROVIDER":        "gemini",
+		"LLM_TIMEOUT_SECONDS": "45",
+		"LLM_MAX_RETRIES":     "3",
+	})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	if got, want := cfg.LLMTimeoutSeconds, 45; got != want {
+		t.Fatalf("LLMTimeoutSeconds = %d, want %d", got, want)
+	}
+	if got, want := cfg.LLMMaxRetries, 3; got != want {
+		t.Fatalf("LLMMaxRetries = %d, want %d", got, want)
+	}
+}
+
+func TestNewRejectsInvalidLLMRuntimeSettings(t *testing.T) {
+	if _, err := New(map[string]string{
+		"LLM_PROVIDER":        "gemini",
+		"LLM_TIMEOUT_SECONDS": "0",
+	}); err == nil {
+		t.Fatalf("New expected timeout validation error")
+	}
+
+	if _, err := New(map[string]string{
+		"LLM_PROVIDER":    "gemini",
+		"LLM_MAX_RETRIES": "-1",
+	}); err == nil {
+		t.Fatalf("New expected retry validation error")
+	}
+}

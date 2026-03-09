@@ -37,6 +37,8 @@ var envGroups = [][]string{
 	},
 	{
 		"LLM_PROVIDER",
+		"LLM_TIMEOUT_SECONDS",
+		"LLM_MAX_RETRIES",
 		"OPENAI_API_KEY",
 		"OPENAI_MODEL",
 		"GEMINI_API_KEY",
@@ -64,6 +66,8 @@ type Config struct {
 	BacklogAPIKey               string
 	BacklogProjectKey           string
 	LLMProvider                 Provider
+	LLMTimeoutSeconds           int
+	LLMMaxRetries               int
 	OpenAIAPIKey                string
 	OpenAIModel                 string
 	GeminiAPIKey                string
@@ -86,6 +90,8 @@ func DefaultValues() map[string]string {
 		"PROMPT_ARTIFACT_RETENTION_DAYS": "30",
 		"PROMPT_DIR":                     "./prompts",
 		"LLM_PROVIDER":                   string(ProviderGemini),
+		"LLM_TIMEOUT_SECONDS":            "60",
+		"LLM_MAX_RETRIES":                "2",
 	}
 }
 
@@ -149,6 +155,30 @@ func New(values map[string]string) (Config, error) {
 		retention = parsed
 	}
 
+	timeoutSeconds := 60
+	if raw := strings.TrimSpace(values["LLM_TIMEOUT_SECONDS"]); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("LLM_TIMEOUT_SECONDS must be an integer: %w", err)
+		}
+		if parsed < 1 {
+			return Config{}, fmt.Errorf("LLM_TIMEOUT_SECONDS must be greater than 0")
+		}
+		timeoutSeconds = parsed
+	}
+
+	maxRetries := 2
+	if raw := strings.TrimSpace(values["LLM_MAX_RETRIES"]); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("LLM_MAX_RETRIES must be an integer: %w", err)
+		}
+		if parsed < 0 {
+			return Config{}, fmt.Errorf("LLM_MAX_RETRIES must be greater than or equal to 0")
+		}
+		maxRetries = parsed
+	}
+
 	provider, err := NormalizeProvider(values["LLM_PROVIDER"])
 	if err != nil {
 		return Config{}, err
@@ -169,6 +199,8 @@ func New(values map[string]string) (Config, error) {
 		BacklogAPIKey:               strings.TrimSpace(values["BACKLOG_API_KEY"]),
 		BacklogProjectKey:           strings.TrimSpace(values["BACKLOG_PROJECT_KEY"]),
 		LLMProvider:                 provider,
+		LLMTimeoutSeconds:           timeoutSeconds,
+		LLMMaxRetries:               maxRetries,
 		OpenAIAPIKey:                strings.TrimSpace(values["OPENAI_API_KEY"]),
 		OpenAIModel:                 strings.TrimSpace(values["OPENAI_MODEL"]),
 		GeminiAPIKey:                strings.TrimSpace(values["GEMINI_API_KEY"]),
@@ -259,6 +291,8 @@ func (c Config) EnvMap() map[string]string {
 		"BACKLOG_API_KEY":                c.BacklogAPIKey,
 		"BACKLOG_PROJECT_KEY":            c.BacklogProjectKey,
 		"LLM_PROVIDER":                   string(c.LLMProvider),
+		"LLM_TIMEOUT_SECONDS":            strconv.Itoa(c.LLMTimeoutSeconds),
+		"LLM_MAX_RETRIES":                strconv.Itoa(c.LLMMaxRetries),
 		"OPENAI_API_KEY":                 c.OpenAIAPIKey,
 		"OPENAI_MODEL":                   c.OpenAIModel,
 		"GEMINI_API_KEY":                 c.GeminiAPIKey,
