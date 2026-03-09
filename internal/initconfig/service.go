@@ -14,17 +14,18 @@ import (
 )
 
 type Options struct {
-	BaseDir        string
-	EnvFile        string
-	NonInteractive bool
-	Force          bool
-	SkipMigrate    bool
-	MigrateOnly    bool
-	Yes            bool
-	StdIn          io.Reader
-	StdOut         io.Writer
-	StdErr         io.Writer
-	Environ        []string
+	BaseDir         string
+	EnvFile         string
+	ConfigOverrides map[string]string
+	NonInteractive  bool
+	Force           bool
+	SkipMigrate     bool
+	MigrateOnly     bool
+	Yes             bool
+	StdIn           io.Reader
+	StdOut          io.Writer
+	StdErr          io.Writer
+	Environ         []string
 }
 
 func Run(ctx context.Context, opts Options) error {
@@ -58,6 +59,7 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
+	seedValues = config.MergeValues(seedValues, opts.ConfigOverrides)
 
 	if opts.MigrateOnly {
 		cfg, err := config.New(seedValues)
@@ -126,7 +128,7 @@ func Run(ctx context.Context, opts Options) error {
 	}
 
 	fmt.Fprintf(opts.StdOut, "initialized: env=%s provider=%s db=%s\n", opts.EnvFile, cfg.LLMProvider, cfg.SQLiteDBPath)
-	fmt.Fprintf(opts.StdOut, "next: backlog-tracker period-summary --project %s --from 2026-03-01 --to 2026-03-07 --provider %s\n", cfg.BacklogProjectKey, cfg.LLMProvider)
+	fmt.Fprintf(opts.StdOut, "next: backlog-tracker period-summary --project %s --from <from-date> --to <to-date> --provider %s\n", cfg.BacklogProjectKey, cfg.LLMProvider)
 	return nil
 }
 
@@ -303,29 +305,7 @@ func newPrompter(stdin io.Reader, stdout io.Writer) *prompter {
 }
 
 func (p *prompter) ask(label, current string, allowBlank bool) (string, error) {
-	for {
-		if current != "" {
-			fmt.Fprintf(p.stdout, "%s [%s]: ", label, current)
-		} else {
-			fmt.Fprintf(p.stdout, "%s: ", label)
-		}
-		line, err := p.reader.ReadString('\n')
-		if err != nil && err != io.EOF {
-			return "", err
-		}
-		value := strings.TrimSpace(line)
-		if value == "" {
-			if current != "" {
-				return current, nil
-			}
-			if allowBlank {
-				return "", nil
-			}
-			fmt.Fprintf(p.stdout, "%s is required.\n", label)
-			continue
-		}
-		return value, nil
-	}
+	return p.readValue(label, current, current, allowBlank)
 }
 
 func (p *prompter) askSecret(label, current string, allowBlank bool) (string, error) {
@@ -333,7 +313,10 @@ func (p *prompter) askSecret(label, current string, allowBlank bool) (string, er
 	if current != "" {
 		display = "<configured>"
 	}
+	return p.readValue(label, display, current, allowBlank)
+}
 
+func (p *prompter) readValue(label, display, fallback string, allowBlank bool) (string, error) {
 	for {
 		if display != "" {
 			fmt.Fprintf(p.stdout, "%s [%s]: ", label, display)
@@ -346,11 +329,14 @@ func (p *prompter) askSecret(label, current string, allowBlank bool) (string, er
 		}
 		value := strings.TrimSpace(line)
 		if value == "" {
-			if current != "" {
-				return current, nil
+			if fallback != "" {
+				return fallback, nil
 			}
 			if allowBlank {
 				return "", nil
+			}
+			if err == io.EOF {
+				return "", fmt.Errorf("unexpected EOF while reading %s", label)
 			}
 			fmt.Fprintf(p.stdout, "%s is required.\n", label)
 			continue

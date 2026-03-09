@@ -7,8 +7,6 @@ import (
 )
 
 func TestResolveValuesPrecedence(t *testing.T) {
-	t.Helper()
-
 	baseDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(baseDir, ".env"), []byte("BACKLOG_PROJECT_KEY=env-project\nAPP_TIMEZONE=UTC\n"), 0o644); err != nil {
 		t.Fatalf("write .env: %v", err)
@@ -55,9 +53,9 @@ func TestValidateProviderCredentials(t *testing.T) {
 	}
 
 	cfg, err = New(map[string]string{
-		"LLM_PROVIDER":    "chatgpt",
-		"OPENAI_API_KEY":  "token",
-		"OPENAI_MODEL":    "gpt-4.1",
+		"LLM_PROVIDER":     "chatgpt",
+		"OPENAI_API_KEY":   "token",
+		"OPENAI_MODEL":     "gpt-4.1",
 		"BACKLOG_BASE_URL": "https://example.backlog.com",
 	})
 	if err != nil {

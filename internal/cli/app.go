@@ -20,7 +20,7 @@ const (
 
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		printUsage(stdout)
+		printUsage(stderr)
 		return ExitCodeInput
 	}
 
@@ -46,6 +46,7 @@ func runInit(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	flags.SetOutput(stderr)
 
 	envFile := flags.String("env-file", config.DefaultEnvFile, "target env file")
+	dbPath := flags.String("db-path", "", "sqlite database path")
 	nonInteractive := flags.Bool("non-interactive", false, "disable prompts")
 	force := flags.Bool("force", false, "overwrite existing env file")
 	skipMigrate := flags.Bool("skip-migrate", false, "skip sqlite migrations")
@@ -62,18 +63,24 @@ func runInit(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 		return ExitCodeInit
 	}
 
+	overrides := map[string]string{}
+	if *dbPath != "" {
+		overrides["SQLITE_DB_PATH"] = *dbPath
+	}
+
 	if err := initconfig.Run(ctx, initconfig.Options{
-		BaseDir:        baseDir,
-		EnvFile:        *envFile,
-		NonInteractive: *nonInteractive,
-		Force:          *force,
-		SkipMigrate:    *skipMigrate,
-		MigrateOnly:    *migrateOnly,
-		Yes:            *yes,
-		StdIn:          stdin,
-		StdOut:         stdout,
-		StdErr:         stderr,
-		Environ:        os.Environ(),
+		BaseDir:         baseDir,
+		EnvFile:         *envFile,
+		NonInteractive:  *nonInteractive,
+		Force:           *force,
+		SkipMigrate:     *skipMigrate,
+		MigrateOnly:     *migrateOnly,
+		Yes:             *yes,
+		StdIn:           stdin,
+		StdOut:          stdout,
+		StdErr:          stderr,
+		Environ:         os.Environ(),
+		ConfigOverrides: overrides,
 	}); err != nil {
 		fmt.Fprintf(stderr, "init failed: %v\n", err)
 		return ExitCodeInit
@@ -145,7 +152,7 @@ func runReportStub(name string, args []string, stdout, stderr io.Writer) int {
 	}
 
 	fmt.Fprintf(stdout, "%s is not implemented on this branch yet.\n", name)
-	return ExitCodeInput
+	return ExitCodeOK
 }
 
 func printUsage(out io.Writer) {

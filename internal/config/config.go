@@ -181,21 +181,24 @@ func New(values map[string]string) (Config, error) {
 
 func (c Config) ValidateForInit() error {
 	missing := make([]string, 0, 8)
-	required := map[string]string{
-		"BACKLOG_BASE_URL":    c.BacklogBaseURL,
-		"BACKLOG_API_KEY":     c.BacklogAPIKey,
-		"BACKLOG_PROJECT_KEY": c.BacklogProjectKey,
-		"APP_TIMEZONE":        c.Timezone,
-		"SQLITE_DB_PATH":      c.SQLiteDBPath,
-		"MIGRATION_DIR":       c.MigrationDir,
-		"PROMPT_DIR":          c.PromptDir,
-		"REPORT_DIR":          c.ReportDir,
-		"RAW_RESPONSE_DIR":    c.RawResponseDir,
-		"PROMPT_PREVIEW_DIR":  c.PromptPreviewDir,
+	required := []struct {
+		name  string
+		value string
+	}{
+		{name: "BACKLOG_BASE_URL", value: c.BacklogBaseURL},
+		{name: "BACKLOG_API_KEY", value: c.BacklogAPIKey},
+		{name: "BACKLOG_PROJECT_KEY", value: c.BacklogProjectKey},
+		{name: "APP_TIMEZONE", value: c.Timezone},
+		{name: "SQLITE_DB_PATH", value: c.SQLiteDBPath},
+		{name: "MIGRATION_DIR", value: c.MigrationDir},
+		{name: "PROMPT_DIR", value: c.PromptDir},
+		{name: "REPORT_DIR", value: c.ReportDir},
+		{name: "RAW_RESPONSE_DIR", value: c.RawResponseDir},
+		{name: "PROMPT_PREVIEW_DIR", value: c.PromptPreviewDir},
 	}
-	for key, value := range required {
-		if isUnset(value) {
-			missing = append(missing, key)
+	for _, requiredSetting := range required {
+		if isUnset(requiredSetting.value) {
+			missing = append(missing, requiredSetting.name)
 		}
 	}
 	if isUnset(c.SlackWebhookURL) && isUnset(c.SlackBotToken) {
