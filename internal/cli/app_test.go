@@ -279,8 +279,128 @@ func TestRunAccountReportDryRunRequiresAccount(t *testing.T) {
 	if exitCode != ExitCodeInput {
 		t.Fatalf("Run exit code = %d, want %d", exitCode, ExitCodeInput)
 	}
-	if !strings.Contains(stderr.String(), "--account is required") {
+	if !strings.Contains(stderr.String(), "account is required") {
 		t.Fatalf("stderr = %q, want account validation", stderr.String())
+	}
+}
+
+func TestRunAccountReportDryRunPersistsArtifacts(t *testing.T) {
+	restoreProvider := stubLLMProvider(t, llm.GenerateResult{
+		Output: llm.AccountReportOutput{
+			ReportType: "account_report",
+			Account:    llm.AccountReportAccount{ID: "alice", DisplayName: "Alice"},
+			Summary:    "summary",
+			Issues: []llm.AccountReportIssue{
+				{
+					IssueKey: "PROJ-1",
+					Title:    "Issue summary",
+					Status:   "Open",
+					Summary:  "Issue summary",
+					ResponseSuggestion: llm.AccountReportResponseSuggestion{
+						Message:           "Reply",
+						Confidence:        "high",
+						NeedsConfirmation: false,
+					},
+				},
+			},
+		},
+		OutputJSON:  []byte(`{"reportType":"account_report","account":{"id":"alice","displayName":"Alice"},"summary":"summary","issues":[{"issueKey":"PROJ-1","title":"Issue summary","status":"Open","summary":"Issue summary","responseSuggestion":{"message":"Reply","confidence":"high","needsConfirmation":false}}]}`),
+		RawResponse: []byte(`{"provider":"stub"}`),
+	}, nil)
+	defer restoreProvider()
+
+	baseDir := t.TempDir()
+	envFile := filepath.Join(baseDir, ".env.local")
+	dbPath := filepath.Join(baseDir, "data", "tracker.sqlite3")
+	previewDir := filepath.Join(baseDir, "data", "prompt-previews")
+	rawDir := filepath.Join(baseDir, "data", "raw")
+	reportDir := filepath.Join(baseDir, "data", "reports")
+	promptDir := filepath.Join(baseDir, "prompts")
+	backlogServer := startBacklogTestServer(t)
+	defer backlogServer.Close()
+
+	writePromptFixtures(t, promptDir)
+	writeEnvFile(t, envFile, map[string]string{
+		"BACKLOG_BASE_URL":               backlogServer.URL,
+		"BACKLOG_API_KEY":                "test-backlog-key",
+		"BACKLOG_PROJECT_KEY":            "PROJ",
+		"LLM_PROVIDER":                   "gemini",
+		"GEMINI_API_KEY":                 "test-gemini-key",
+		"GEMINI_MODEL":                   "gemini-2.5-pro",
+		"SQLITE_DB_PATH":                 dbPath,
+		"REPORT_DIR":                     reportDir,
+		"RAW_RESPONSE_DIR":               rawDir,
+		"PROMPT_DIR":                     promptDir,
+		"PROMPT_PREVIEW_DIR":             previewDir,
+		"PROMPT_ARTIFACT_RETENTION_DAYS": "30",
+	})
+	if err := migrations.ApplyAll(context.Background(), dbPath, repoMigrationDir(t)); err != nil {
+		t.Fatalf("ApplyAll returned error: %v", err)
+	}
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	exitCode := Run(
+		context.Background(),
+		[]string{"account-report", "--dry-run", "--project", "PROJ", "--account", "alice", "--max-comments", "1", "--env-file", envFile},
+		strings.NewReader(""),
+		stdout,
+		stderr,
+	)
+
+	if exitCode != ExitCodeOK {
+		t.Fatalf("Run exit code = %d, want %d; stderr=%q", exitCode, ExitCodeOK, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "issue_count: 1") {
+		t.Fatalf("stdout = %q, want issue count", stdout.String())
+	}
+
+	jobID := extractPrefixedValue(t, stdout.String(), "job_id: ")
+	previewPath := extractPrefixedValue(t, stdout.String(), "preview_path: ")
+	rawResponsePath := extractPrefixedValue(t, stdout.String(), "raw_response_path: ")
+	reportPath := extractPrefixedValue(t, stdout.String(), "report_path: ")
+	if _, err := os.Stat(previewPath); err != nil {
+		t.Fatalf("preview path missing: %v", err)
+	}
+	if !strings.HasPrefix(previewPath, previewDir) {
+		t.Fatalf("previewPath = %q, want prefix %q", previewPath, previewDir)
+	}
+	if _, err := os.Stat(rawResponsePath); err != nil {
+		t.Fatalf("raw response path missing: %v", err)
+	}
+	if !strings.HasPrefix(rawResponsePath, rawDir) {
+		t.Fatalf("rawResponsePath = %q, want prefix %q", rawResponsePath, rawDir)
+	}
+	if _, err := os.Stat(reportPath); err != nil {
+		t.Fatalf("report path missing: %v", err)
+	}
+
+	store, err := sqlite.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	defer store.Close()
+
+	jobRun, err := store.JobRuns().GetByJobID(context.Background(), jobID)
+	if err != nil {
+		t.Fatalf("GetByJobID returned error: %v", err)
+	}
+	if jobRun.TargetAccount == nil || *jobRun.TargetAccount != "alice" {
+		t.Fatalf("jobRun.TargetAccount = %v, want alice", jobRun.TargetAccount)
+	}
+	if jobRun.ReportPath == nil || *jobRun.ReportPath != reportPath {
+		t.Fatalf("jobRun.ReportPath = %v, want %q", jobRun.ReportPath, reportPath)
+	}
+
+	previewContent, err := os.ReadFile(previewPath)
+	if err != nil {
+		t.Fatalf("ReadFile preview returned error: %v", err)
+	}
+	if !strings.Contains(string(previewContent), "Latest comment") {
+		t.Fatalf("preview content = %q, want collected comment", string(previewContent))
 	}
 }
 
@@ -389,6 +509,76 @@ func TestRunPeriodSummaryReturnsExitCodeSlackOnNotifierFailure(t *testing.T) {
 	}
 }
 
+func TestRunAccountReportReturnsExitCodeSlackOnNotifierFailure(t *testing.T) {
+	restoreProvider := stubLLMProvider(t, llm.GenerateResult{
+		Output: llm.AccountReportOutput{
+			ReportType: "account_report",
+			Account:    llm.AccountReportAccount{ID: "alice", DisplayName: "Alice"},
+			Summary:    "summary",
+			Issues: []llm.AccountReportIssue{
+				{
+					IssueKey: "PROJ-1",
+					Title:    "Issue summary",
+					Status:   "Open",
+					Summary:  "Issue summary",
+					ResponseSuggestion: llm.AccountReportResponseSuggestion{
+						Message:           "Reply",
+						Confidence:        "high",
+						NeedsConfirmation: false,
+					},
+				},
+			},
+		},
+		OutputJSON:  []byte(`{"reportType":"account_report","account":{"id":"alice","displayName":"Alice"},"summary":"summary","issues":[{"issueKey":"PROJ-1","title":"Issue summary","status":"Open","summary":"Issue summary","responseSuggestion":{"message":"Reply","confidence":"high","needsConfirmation":false}}]}`),
+		RawResponse: []byte(`{"provider":"stub"}`),
+	}, nil)
+	defer restoreProvider()
+
+	restoreNotifier := stubSlackNotifier(t, fakeSlackNotifier{err: errors.New("slack failed")}, nil)
+	defer restoreNotifier()
+
+	baseDir := t.TempDir()
+	envFile := filepath.Join(baseDir, ".env.local")
+	dbPath := filepath.Join(baseDir, "data", "tracker.sqlite3")
+	promptDir := filepath.Join(baseDir, "prompts")
+	backlogServer := startBacklogTestServer(t)
+	defer backlogServer.Close()
+	writePromptFixtures(t, promptDir)
+	writeEnvFile(t, envFile, map[string]string{
+		"BACKLOG_BASE_URL":    backlogServer.URL,
+		"BACKLOG_API_KEY":     "test-backlog-key",
+		"BACKLOG_PROJECT_KEY": "PROJ",
+		"LLM_PROVIDER":        "gemini",
+		"GEMINI_API_KEY":      "test-gemini-key",
+		"GEMINI_MODEL":        "gemini-2.5-pro",
+		"SQLITE_DB_PATH":      dbPath,
+		"REPORT_DIR":          filepath.Join(baseDir, "data", "reports"),
+		"RAW_RESPONSE_DIR":    filepath.Join(baseDir, "data", "raw"),
+		"PROMPT_DIR":          promptDir,
+		"PROMPT_PREVIEW_DIR":  filepath.Join(baseDir, "data", "prompt-previews"),
+	})
+	if err := migrations.ApplyAll(context.Background(), dbPath, repoMigrationDir(t)); err != nil {
+		t.Fatalf("ApplyAll returned error: %v", err)
+	}
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	exitCode := Run(
+		context.Background(),
+		[]string{"account-report", "--project", "PROJ", "--account", "alice", "--env-file", envFile},
+		strings.NewReader(""),
+		stdout,
+		stderr,
+	)
+
+	if exitCode != ExitCodeSlack {
+		t.Fatalf("Run exit code = %d, want %d", exitCode, ExitCodeSlack)
+	}
+	if !strings.Contains(stderr.String(), "slack failed") {
+		t.Fatalf("stderr = %q, want slack failure", stderr.String())
+	}
+}
+
 func writePromptFixtures(t *testing.T, promptDir string) {
 	t.Helper()
 
@@ -407,7 +597,7 @@ func writePromptFixtures(t *testing.T, promptDir string) {
 	if err := os.WriteFile(filepath.Join(promptDir, "account_report", "system.tmpl"), []byte("system account report"), 0o644); err != nil {
 		t.Fatalf("write account_report system template: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(promptDir, "account_report", "user.tmpl"), []byte("account: {{ .AccountID }}"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(promptDir, "account_report", "user.tmpl"), []byte("account: {{ .AccountID }}\nissues: {{ .IssuesJSON }}"), 0o644); err != nil {
 		t.Fatalf("write account_report user template: %v", err)
 	}
 }
@@ -515,6 +705,15 @@ func startBacklogTestServer(t *testing.T) *httptest.Server {
 				"projectKey": "PROJ",
 				"name":       "Project",
 			})
+		case "/api/v2/projects/PROJ/users":
+			writeAPIJSON(t, w, []map[string]any{
+				{
+					"id":          10,
+					"userId":      "alice",
+					"name":        "Alice",
+					"mailAddress": "alice@example.com",
+				},
+			})
 		case "/api/v2/issues":
 			writeAPIJSON(t, w, []map[string]any{
 				{
@@ -535,6 +734,31 @@ func startBacklogTestServer(t *testing.T) *httptest.Server {
 					},
 					"created": "2026-03-01T00:00:00Z",
 					"updated": "2026-03-02T00:00:00Z",
+				},
+			})
+		case "/api/v2/issues/PROJ-1/comments":
+			writeAPIJSON(t, w, []map[string]any{
+				{
+					"id":      5001,
+					"content": "Old comment",
+					"createdUser": map[string]any{
+						"id":     11,
+						"userId": "bob",
+						"name":   "Bob",
+					},
+					"created": "2026-03-01T09:00:00Z",
+					"updated": "2026-03-01T09:00:00Z",
+				},
+				{
+					"id":      5002,
+					"content": "Latest comment",
+					"createdUser": map[string]any{
+						"id":     12,
+						"userId": "carol",
+						"name":   "Carol",
+					},
+					"created": "2026-03-02T09:00:00Z",
+					"updated": "2026-03-02T09:00:00Z",
 				},
 			})
 		default:

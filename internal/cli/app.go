@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/soudai/BacklogTracker/internal/accountreport"
 	"github.com/soudai/BacklogTracker/internal/backlogclient"
 	"github.com/soudai/BacklogTracker/internal/config"
 	"github.com/soudai/BacklogTracker/internal/initconfig"
@@ -50,7 +51,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	case "period-summary":
 		return runPeriodSummary(ctx, args[1:], stdout, stderr)
 	case "account-report":
-		return runAccountReportStub(ctx, args[1:], stdout, stderr)
+		return runAccountReport(ctx, args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		printUsage(stdout)
 		return ExitCodeOK
@@ -274,7 +275,7 @@ func runPeriodSummary(ctx context.Context, args []string, stdout, stderr io.Writ
 	return ExitCodeOK
 }
 
-func runAccountReportStub(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+func runAccountReport(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("account-report", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
@@ -335,17 +336,6 @@ func runAccountReportStub(ctx context.Context, args []string, stdout, stderr io.
 			fmt.Fprintf(stderr, "invalid dry-run config: %v\n", err)
 			return ExitCodeInput
 		}
-		return runPromptDryRun(ctx, reportDryRunOptions{
-			CommandName: "account-report",
-			BaseDir:     baseDir,
-			Config:      cfg,
-			From:        from,
-			To:          to,
-			Account:     account,
-			MaxComments: maxComments,
-			StdOut:      stdout,
-			StdErr:      stderr,
-		})
 	}
 
 	if err := cfg.ValidateForReport(); err != nil {
@@ -353,201 +343,90 @@ func runAccountReportStub(ctx context.Context, args []string, stdout, stderr io.
 		return ExitCodeInput
 	}
 
-	fmt.Fprintln(stdout, "account-report is not implemented on this branch yet.")
-	return ExitCodeOK
-}
-
-type reportDryRunOptions struct {
-	CommandName string
-	BaseDir     string
-	Config      config.Config
-	From        string
-	To          string
-	DateField   string
-	Assignee    string
-	Statuses    []string
-	Account     string
-	MaxComments int
-	StdOut      io.Writer
-	StdErr      io.Writer
-}
-
-func runPromptDryRun(ctx context.Context, opts reportDryRunOptions) int {
-	task, err := prompts.ParseTask(opts.CommandName)
+	fromDate, err := parseOptionalDateInLocation(from, cfg.Timezone)
 	if err != nil {
-		fmt.Fprintf(opts.StdErr, "dry-run failed: %v\n", err)
+		fmt.Fprintf(stderr, "invalid --from: %v\n", err)
+		return ExitCodeInput
+	}
+	toDate, err := parseOptionalDateInLocation(to, cfg.Timezone)
+	if err != nil {
+		fmt.Fprintf(stderr, "invalid --to: %v\n", err)
 		return ExitCodeInput
 	}
 
-	outputSchemaJSON, err := prompts.OutputSchemaJSON(task)
+	backlogClient, err := newBacklogClient(cfg.BacklogAPIKey, cfg.BacklogBaseURL)
 	if err != nil {
-		fmt.Fprintf(opts.StdErr, "dry-run failed: %v\n", err)
+		fmt.Fprintf(stderr, "account-report failed: %v\n", err)
 		return ExitCodeInput
 	}
-	data, err := buildPromptTemplateData(task, outputSchemaJSON, opts)
+	collector := backlogclient.NewCollector(backlogClient)
+
+	providerInstance, err := newLLMProvider(cfg)
 	if err != nil {
-		fmt.Fprintf(opts.StdErr, "dry-run failed: %v\n", err)
+		fmt.Fprintf(stderr, "account-report failed: %v\n", err)
 		return ExitCodeInput
 	}
 
-	now := time.Now().UTC()
-	manager := prompts.Manager{
-		PromptDir:     config.ResolvePath(opts.BaseDir, opts.Config.PromptDir),
-		PreviewDir:    config.ResolvePath(opts.BaseDir, opts.Config.PromptPreviewDir),
-		RetentionDays: opts.Config.PromptArtifactRetentionDays,
-		Now: func() time.Time {
-			return now
-		},
-	}
-
-	rendered, err := manager.Render(task, data)
-	if err != nil {
-		fmt.Fprintf(opts.StdErr, "dry-run failed: %v\n", err)
-		return ExitCodeStorage
-	}
-
-	jobID := buildDryRunJobID(task, now)
-	previewPath, err := manager.SavePreview(jobID, rendered)
-	if err != nil {
-		fmt.Fprintf(opts.StdErr, "dry-run failed: %v\n", err)
-		return ExitCodeStorage
-	}
-
-	provider, err := newLLMProvider(opts.Config)
-	if err != nil {
-		fmt.Fprintf(opts.StdErr, "dry-run failed: %v\n", err)
-		return ExitCodeInput
-	}
-	result, err := provider.Generate(ctx, llm.GenerateRequest{
-		Task:         task,
-		SystemPrompt: rendered.System,
-		UserPrompt:   rendered.User,
-		SchemaJSON:   outputSchemaJSON,
-	})
-	if err != nil {
-		fmt.Fprintf(opts.StdErr, "dry-run failed: %v\n", err)
-		return ExitCodeLLM
-	}
-
-	rawResponsePath, err := saveRawResponse(opts.BaseDir, opts.Config.RawResponseDir, jobID, opts.Config.LLMProvider, task, result.RawResponse, now)
-	if err != nil {
-		fmt.Fprintf(opts.StdErr, "dry-run failed: %v\n", err)
-		return ExitCodeStorage
-	}
-
-	if err := savePromptDryRun(ctx, opts, task, jobID, previewPath, rawResponsePath, rendered, now); err != nil {
-		fmt.Fprintf(opts.StdErr, "dry-run failed: %v\n", err)
-		return ExitCodeStorage
-	}
-
-	fmt.Fprintf(opts.StdOut, "job_id: %s\nprompt_hash: %s\npreview_path: %s\nraw_response_path: %s\n\n", jobID, rendered.Hash, previewPath, rawResponsePath)
-	fmt.Fprintln(opts.StdOut, "--- SYSTEM ---")
-	fmt.Fprintln(opts.StdOut, rendered.System)
-	fmt.Fprintln(opts.StdOut)
-	fmt.Fprintln(opts.StdOut, "--- USER ---")
-	fmt.Fprintln(opts.StdOut, rendered.User)
-	fmt.Fprintln(opts.StdOut)
-	fmt.Fprintln(opts.StdOut, "--- LLM OUTPUT ---")
-	fmt.Fprintln(opts.StdOut, string(result.OutputJSON))
-	return ExitCodeOK
-}
-
-func buildPromptTemplateData(task prompts.Task, outputSchema string, opts reportDryRunOptions) (map[string]any, error) {
-	switch task {
-	case prompts.TaskPeriodSummary:
-		if strings.TrimSpace(opts.From) == "" || strings.TrimSpace(opts.To) == "" {
-			return nil, fmt.Errorf("--from and --to are required for period-summary --dry-run")
+	var notifier notificationslack.Notifier
+	if !*dryRun {
+		notifier, err = newSlackNotifier(cfg)
+		if err != nil {
+			fmt.Fprintf(stderr, "account-report failed: %v\n", err)
+			return ExitCodeInput
 		}
-		return map[string]any{
-			"ProjectKey":       opts.Config.BacklogProjectKey,
-			"ProjectName":      opts.Config.BacklogProjectKey,
-			"DateFrom":         opts.From,
-			"DateTo":           opts.To,
-			"IssueCount":       0,
-			"IssuesJSON":       "[]",
-			"OutputSchemaJSON": outputSchema,
-			"Language":         "ja",
-		}, nil
-	case prompts.TaskAccountReport:
-		if strings.TrimSpace(opts.Account) == "" {
-			return nil, fmt.Errorf("--account is required for account-report --dry-run")
-		}
-		return map[string]any{
-			"AccountID":        opts.Account,
-			"AccountName":      opts.Account,
-			"DateFrom":         defaultString(opts.From, "(not specified)"),
-			"DateTo":           defaultString(opts.To, "(not specified)"),
-			"IssuesJSON":       "[]",
-			"OutputSchemaJSON": outputSchema,
-			"Language":         "ja",
-		}, nil
-	default:
-		return nil, fmt.Errorf("unsupported prompt task %q", task)
 	}
-}
 
-func savePromptDryRun(ctx context.Context, opts reportDryRunOptions, task prompts.Task, jobID, previewPath, rawResponsePath string, rendered prompts.RenderedPrompt, now time.Time) error {
-	store, err := sqlite.Open(config.ResolvePath(opts.BaseDir, opts.Config.SQLiteDBPath))
+	store, err := sqlite.Open(config.ResolvePath(baseDir, cfg.SQLiteDBPath))
 	if err != nil {
-		return fmt.Errorf("open sqlite store: %w", err)
+		fmt.Fprintf(stderr, "account-report failed: %v\n", err)
+		return ExitCodeStorage
 	}
 	defer store.Close()
 
-	var targetAccount *string
-	if strings.TrimSpace(opts.Account) != "" {
-		targetAccount = &opts.Account
+	manager := prompts.Manager{
+		PromptDir:     config.ResolvePath(baseDir, cfg.PromptDir),
+		PreviewDir:    config.ResolvePath(baseDir, cfg.PromptPreviewDir),
+		RetentionDays: cfg.PromptArtifactRetentionDays,
+		Now:           currentTime,
 	}
-	promptName := string(task)
-	promptHash := rendered.Hash
-	finishedAt := now
-
-	if err := store.JobRuns().Save(ctx, sqlite.JobRun{
-		JobID:           jobID,
-		JobType:         string(task),
-		Provider:        string(opts.Config.LLMProvider),
-		ProjectKey:      opts.Config.BacklogProjectKey,
-		TargetAccount:   targetAccount,
-		Status:          "completed",
-		PromptName:      &promptName,
-		PromptHash:      &promptHash,
-		RawResponsePath: stringPointer(rawResponsePath),
-		StartedAt:       now,
-		FinishedAt:      &finishedAt,
-	}); err != nil {
-		return fmt.Errorf("save job_run: %w", err)
+	service := accountreport.Service{
+		BaseDir:         baseDir,
+		Config:          cfg,
+		Collector:       collector,
+		Comments:        backlogClient,
+		PromptManager:   manager,
+		LLMProvider:     providerInstance,
+		Notifier:        notifier,
+		Store:           store,
+		SaveRawResponse: saveRawResponse,
+		Now:             currentTime,
 	}
 
-	if err := store.PromptRuns().Save(ctx, sqlite.PromptRun{
-		JobID:              jobID,
-		TaskType:           string(task),
-		SystemTemplate:     rendered.SystemTemplate,
-		UserTemplate:       rendered.UserTemplate,
-		PromptHash:         rendered.Hash,
-		RenderedPromptPath: stringPointer(previewPath),
-		CreatedAt:          now,
-	}); err != nil {
-		return fmt.Errorf("save prompt_run: %w", err)
+	result, err := service.Run(ctx, accountreport.Input{
+		Account:     account,
+		From:        fromDate,
+		To:          toDate,
+		MaxComments: maxComments,
+		DryRun:      *dryRun,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "account-report failed: %v\n", err)
+		return exitCodeForAccountReportError(err)
 	}
 
-	return nil
-}
-
-func buildDryRunJobID(task prompts.Task, now time.Time) string {
-	return fmt.Sprintf("%s-%s", task, now.UTC().Format("20060102T150405.000000000"))
-}
-
-func stringPointer(value string) *string {
-	if strings.TrimSpace(value) == "" {
-		return nil
+	notificationStatus := "skipped (dry-run)"
+	if result.NotificationSent {
+		notificationStatus = result.NotificationResponse
 	}
-	return &value
-}
-
-func defaultString(value, fallback string) string {
-	if strings.TrimSpace(value) == "" {
-		return fallback
-	}
-	return value
+	fmt.Fprintf(stdout, "job_id: %s\nissue_count: %d\npreview_path: %s\nraw_response_path: %s\nreport_path: %s\nnotification: %s\n",
+		result.JobID,
+		result.IssueCount,
+		result.PreviewPath,
+		result.RawResponsePath,
+		result.ReportPath,
+		notificationStatus,
+	)
+	return ExitCodeOK
 }
 
 func validateDryRunConfig(cfg config.Config) error {
@@ -597,6 +476,28 @@ func exitCodeForPeriodSummaryError(err error) int {
 	}
 }
 
+func exitCodeForAccountReportError(err error) int {
+	var appErr *accountreport.Error
+	if !errors.As(err, &appErr) {
+		return ExitCodeInput
+	}
+
+	switch appErr.Kind {
+	case accountreport.KindInput:
+		return ExitCodeInput
+	case accountreport.KindBacklog:
+		return ExitCodeBacklog
+	case accountreport.KindLLM:
+		return ExitCodeLLM
+	case accountreport.KindSlack:
+		return ExitCodeSlack
+	case accountreport.KindStorage:
+		return ExitCodeStorage
+	default:
+		return ExitCodeInput
+	}
+}
+
 func parseDateInLocation(value string, location *time.Location) (time.Time, error) {
 	if strings.TrimSpace(value) == "" {
 		return time.Time{}, fmt.Errorf("date is required")
@@ -606,6 +507,18 @@ func parseDateInLocation(value string, location *time.Location) (time.Time, erro
 		return time.Time{}, err
 	}
 	return parsed, nil
+}
+
+func parseOptionalDateInLocation(value, timezone string) (time.Time, error) {
+	if strings.TrimSpace(value) == "" {
+		return time.Time{}, nil
+	}
+
+	location, err := time.LoadLocation(timezone)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return parseDateInLocation(value, location)
 }
 
 func printUsage(out io.Writer) {
