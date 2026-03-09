@@ -3,12 +3,15 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/soudai/BacklogTracker/internal/config"
+	"github.com/soudai/BacklogTracker/internal/llm"
 	"github.com/soudai/BacklogTracker/internal/migrations"
 	"github.com/soudai/BacklogTracker/internal/storage/sqlite"
 )
@@ -115,10 +118,25 @@ func TestRunInitReturnsExitCodeInitOnMigrationError(t *testing.T) {
 }
 
 func TestRunPeriodSummaryDryRunRendersPromptAndPersistsArtifacts(t *testing.T) {
+	restoreProvider := stubLLMProvider(t, llm.GenerateResult{
+		Output: llm.PeriodSummaryOutput{
+			ReportType: "period_summary",
+			Headline:   "headline",
+			Overview:   "overview",
+			KeyPoints:  []string{"point"},
+			RiskItems:  []llm.PeriodSummaryRiskItem{},
+			Counts:     llm.PeriodSummaryCounts{Total: 1},
+		},
+		OutputJSON:  []byte(`{"reportType":"period_summary","headline":"headline","overview":"overview","keyPoints":["point"],"riskItems":[],"counts":{"total":1}}`),
+		RawResponse: []byte(`{"provider":"stub"}`),
+	}, nil)
+	defer restoreProvider()
+
 	baseDir := t.TempDir()
 	envFile := filepath.Join(baseDir, ".env.local")
 	dbPath := filepath.Join(baseDir, "data", "tracker.sqlite3")
 	previewDir := filepath.Join(baseDir, "data", "prompt-previews")
+	rawDir := filepath.Join(baseDir, "data", "raw")
 	promptDir := filepath.Join(baseDir, "prompts")
 
 	writePromptFixtures(t, promptDir)
@@ -126,7 +144,11 @@ func TestRunPeriodSummaryDryRunRendersPromptAndPersistsArtifacts(t *testing.T) {
 		"BACKLOG_BASE_URL":               "https://example.backlog.com",
 		"BACKLOG_API_KEY":                "test-backlog-key",
 		"BACKLOG_PROJECT_KEY":            "PROJ",
+		"LLM_PROVIDER":                   "gemini",
+		"GEMINI_API_KEY":                 "test-gemini-key",
+		"GEMINI_MODEL":                   "gemini-2.5-pro",
 		"SQLITE_DB_PATH":                 dbPath,
+		"RAW_RESPONSE_DIR":               rawDir,
 		"PROMPT_DIR":                     promptDir,
 		"PROMPT_PREVIEW_DIR":             previewDir,
 		"PROMPT_ARTIFACT_RETENTION_DAYS": "30",
@@ -160,11 +182,21 @@ func TestRunPeriodSummaryDryRunRendersPromptAndPersistsArtifacts(t *testing.T) {
 
 	jobID := extractPrefixedValue(t, stdout.String(), "job_id: ")
 	previewPath := extractPrefixedValue(t, stdout.String(), "preview_path: ")
+	rawResponsePath := extractPrefixedValue(t, stdout.String(), "raw_response_path: ")
 	if _, err := os.Stat(previewPath); err != nil {
 		t.Fatalf("preview path missing: %v", err)
 	}
 	if !strings.HasPrefix(previewPath, previewDir) {
 		t.Fatalf("previewPath = %q, want prefix %q", previewPath, previewDir)
+	}
+	if _, err := os.Stat(rawResponsePath); err != nil {
+		t.Fatalf("raw response path missing: %v", err)
+	}
+	if !strings.HasPrefix(rawResponsePath, rawDir) {
+		t.Fatalf("rawResponsePath = %q, want prefix %q", rawResponsePath, rawDir)
+	}
+	if !strings.Contains(stdout.String(), "--- LLM OUTPUT ---") {
+		t.Fatalf("stdout = %q, want llm output section", stdout.String())
 	}
 
 	store, err := sqlite.Open(dbPath)
@@ -180,6 +212,9 @@ func TestRunPeriodSummaryDryRunRendersPromptAndPersistsArtifacts(t *testing.T) {
 	if jobRun.PromptHash == nil || *jobRun.PromptHash == "" {
 		t.Fatalf("jobRun.PromptHash = %v, want a saved prompt hash", jobRun.PromptHash)
 	}
+	if jobRun.RawResponsePath == nil || *jobRun.RawResponsePath != rawResponsePath {
+		t.Fatalf("jobRun.RawResponsePath = %v, want %q", jobRun.RawResponsePath, rawResponsePath)
+	}
 
 	promptRuns, err := store.PromptRuns().ListByJobID(context.Background(), jobID)
 	if err != nil {
@@ -194,6 +229,9 @@ func TestRunPeriodSummaryDryRunRendersPromptAndPersistsArtifacts(t *testing.T) {
 }
 
 func TestRunAccountReportDryRunRequiresAccount(t *testing.T) {
+	restoreProvider := stubLLMProvider(t, llm.GenerateResult{}, nil)
+	defer restoreProvider()
+
 	baseDir := t.TempDir()
 	envFile := filepath.Join(baseDir, ".env.local")
 	promptDir := filepath.Join(baseDir, "prompts")
@@ -202,7 +240,11 @@ func TestRunAccountReportDryRunRequiresAccount(t *testing.T) {
 		"BACKLOG_BASE_URL":    "https://example.backlog.com",
 		"BACKLOG_API_KEY":     "test-backlog-key",
 		"BACKLOG_PROJECT_KEY": "PROJ",
+		"LLM_PROVIDER":        "gemini",
+		"GEMINI_API_KEY":      "test-gemini-key",
+		"GEMINI_MODEL":        "gemini-2.5-pro",
 		"SQLITE_DB_PATH":      filepath.Join(baseDir, "data", "tracker.sqlite3"),
+		"RAW_RESPONSE_DIR":    filepath.Join(baseDir, "data", "raw"),
 		"PROMPT_DIR":          promptDir,
 		"PROMPT_PREVIEW_DIR":  filepath.Join(baseDir, "data", "prompt-previews"),
 	})
@@ -222,6 +264,43 @@ func TestRunAccountReportDryRunRequiresAccount(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "--account is required") {
 		t.Fatalf("stderr = %q, want account validation", stderr.String())
+	}
+}
+
+func TestRunPeriodSummaryDryRunReturnsExitCodeLLMOnProviderFailure(t *testing.T) {
+	restoreProvider := stubLLMProvider(t, llm.GenerateResult{}, errors.New("provider failed"))
+	defer restoreProvider()
+
+	baseDir := t.TempDir()
+	envFile := filepath.Join(baseDir, ".env.local")
+	promptDir := filepath.Join(baseDir, "prompts")
+	writePromptFixtures(t, promptDir)
+	writeEnvFile(t, envFile, map[string]string{
+		"BACKLOG_PROJECT_KEY": "PROJ",
+		"LLM_PROVIDER":        "gemini",
+		"GEMINI_API_KEY":      "test-gemini-key",
+		"GEMINI_MODEL":        "gemini-2.5-pro",
+		"SQLITE_DB_PATH":      filepath.Join(baseDir, "data", "tracker.sqlite3"),
+		"RAW_RESPONSE_DIR":    filepath.Join(baseDir, "data", "raw"),
+		"PROMPT_DIR":          promptDir,
+		"PROMPT_PREVIEW_DIR":  filepath.Join(baseDir, "data", "prompt-previews"),
+	})
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	exitCode := Run(
+		context.Background(),
+		[]string{"period-summary", "--dry-run", "--project", "PROJ", "--from", "2026-03-01", "--to", "2026-03-07", "--env-file", envFile},
+		strings.NewReader(""),
+		stdout,
+		stderr,
+	)
+
+	if exitCode != ExitCodeLLM {
+		t.Fatalf("Run exit code = %d, want %d", exitCode, ExitCodeLLM)
+	}
+	if !strings.Contains(stderr.String(), "provider failed") {
+		t.Fatalf("stderr = %q, want provider failure", stderr.String())
 	}
 }
 
@@ -286,4 +365,28 @@ func repoMigrationDir(t *testing.T) string {
 		t.Fatalf("resolve current file path")
 	}
 	return filepath.Clean(filepath.Join(filepath.Dir(currentFile), "..", "..", "migrations"))
+}
+
+func stubLLMProvider(t *testing.T, result llm.GenerateResult, err error) func() {
+	t.Helper()
+
+	previous := newLLMProvider
+	newLLMProvider = func(cfg config.Config, optionFns ...llm.Option) (llm.Provider, error) {
+		return fakeLLMProvider{
+			result: result,
+			err:    err,
+		}, nil
+	}
+	return func() {
+		newLLMProvider = previous
+	}
+}
+
+type fakeLLMProvider struct {
+	result llm.GenerateResult
+	err    error
+}
+
+func (f fakeLLMProvider) Generate(ctx context.Context, req llm.GenerateRequest) (llm.GenerateResult, error) {
+	return f.result, f.err
 }
