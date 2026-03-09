@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -102,6 +103,7 @@ func TestGeminiProviderGenerateAccountReport(t *testing.T) {
 		if got := r.Header.Get("x-goog-api-key"); got != "gemini-key" {
 			t.Fatalf("x-goog-api-key = %q", got)
 		}
+		assertGeminiRequestBody(t, r.Body)
 
 		writeJSON(t, w, map[string]any{
 			"candidates": []map[string]any{
@@ -148,6 +150,72 @@ func TestGeminiProviderGenerateAccountReport(t *testing.T) {
 	}
 	if got, want := output.Account.ID, "yamada"; got != want {
 		t.Fatalf("output.Account.ID = %q, want %q", got, want)
+	}
+}
+
+func assertGeminiRequestBody(t *testing.T, body io.Reader) {
+	t.Helper()
+
+	var payload map[string]json.RawMessage
+	if err := json.NewDecoder(body).Decode(&payload); err != nil {
+		t.Fatalf("decode gemini request body: %v", err)
+	}
+
+	if _, ok := payload["systemInstruction"]; !ok {
+		t.Fatalf("gemini request missing systemInstruction")
+	}
+	if _, ok := payload["system_instruction"]; ok {
+		t.Fatalf("gemini request unexpectedly contains system_instruction")
+	}
+	if _, ok := payload["generationConfig"]; !ok {
+		t.Fatalf("gemini request missing generationConfig")
+	}
+
+	var systemInstruction struct {
+		Parts []struct {
+			Text string `json:"text"`
+		} `json:"parts"`
+	}
+	if err := json.Unmarshal(payload["systemInstruction"], &systemInstruction); err != nil {
+		t.Fatalf("unmarshal systemInstruction: %v", err)
+	}
+	if len(systemInstruction.Parts) != 1 || systemInstruction.Parts[0].Text != "system" {
+		t.Fatalf("systemInstruction.parts = %#v, want single system prompt", systemInstruction.Parts)
+	}
+
+	var contents []struct {
+		Role  string `json:"role"`
+		Parts []struct {
+			Text string `json:"text"`
+		} `json:"parts"`
+	}
+	if err := json.Unmarshal(payload["contents"], &contents); err != nil {
+		t.Fatalf("unmarshal contents: %v", err)
+	}
+	if len(contents) != 1 || contents[0].Role != "user" || len(contents[0].Parts) != 1 || contents[0].Parts[0].Text != "user" {
+		t.Fatalf("contents = %#v, want single user prompt", contents)
+	}
+
+	var generationConfig map[string]json.RawMessage
+	if err := json.Unmarshal(payload["generationConfig"], &generationConfig); err != nil {
+		t.Fatalf("unmarshal generationConfig: %v", err)
+	}
+	if _, ok := generationConfig["responseJsonSchema"]; !ok {
+		t.Fatalf("generationConfig missing responseJsonSchema")
+	}
+	if _, ok := generationConfig["responseMimeType"]; !ok {
+		t.Fatalf("generationConfig missing responseMimeType")
+	}
+	if _, ok := generationConfig["responseSchema"]; ok {
+		t.Fatalf("generationConfig unexpectedly contains responseSchema")
+	}
+
+	var mimeType string
+	if err := json.Unmarshal(generationConfig["responseMimeType"], &mimeType); err != nil {
+		t.Fatalf("unmarshal responseMimeType: %v", err)
+	}
+	if mimeType != "application/json" {
+		t.Fatalf("responseMimeType = %q, want application/json", mimeType)
 	}
 }
 

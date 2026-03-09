@@ -224,12 +224,12 @@ func runPromptDryRun(ctx context.Context, opts reportDryRunOptions) int {
 		return ExitCodeInput
 	}
 
-	data, err := buildPromptTemplateData(task, opts)
+	outputSchemaJSON, err := prompts.OutputSchemaJSON(task)
 	if err != nil {
 		fmt.Fprintf(opts.StdErr, "dry-run failed: %v\n", err)
 		return ExitCodeInput
 	}
-	outputSchemaJSON, err := prompts.OutputSchemaJSON(task)
+	data, err := buildPromptTemplateData(task, outputSchemaJSON, opts)
 	if err != nil {
 		fmt.Fprintf(opts.StdErr, "dry-run failed: %v\n", err)
 		return ExitCodeInput
@@ -297,12 +297,7 @@ func runPromptDryRun(ctx context.Context, opts reportDryRunOptions) int {
 	return ExitCodeOK
 }
 
-func buildPromptTemplateData(task prompts.Task, opts reportDryRunOptions) (map[string]any, error) {
-	outputSchema, err := prompts.OutputSchemaJSON(task)
-	if err != nil {
-		return nil, err
-	}
-
+func buildPromptTemplateData(task prompts.Task, outputSchema string, opts reportDryRunOptions) (map[string]any, error) {
 	switch task {
 	case prompts.TaskPeriodSummary:
 		if strings.TrimSpace(opts.From) == "" || strings.TrimSpace(opts.To) == "" {

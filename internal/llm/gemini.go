@@ -20,7 +20,7 @@ type geminiProvider struct {
 }
 
 type geminiRequest struct {
-	SystemInstruction geminiContent          `json:"system_instruction,omitempty"`
+	SystemInstruction geminiContent          `json:"systemInstruction,omitempty"`
 	Contents          []geminiContent        `json:"contents"`
 	GenerationConfig  geminiGenerationConfig `json:"generationConfig"`
 }
