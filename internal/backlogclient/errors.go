@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
+	"strings"
 )
 
 type HTTPStatusError struct {
@@ -19,10 +21,11 @@ func (e *HTTPStatusError) Error() string {
 	if e == nil {
 		return "<nil>"
 	}
+	sanitizedURL := sanitizeURL(e.URL)
 	if e.Body != "" {
-		return fmt.Sprintf("backlog request failed: %s %s returned %s: %s", e.Method, e.URL, e.Status, e.Body)
+		return fmt.Sprintf("backlog request failed: %s %s returned %s: %s", e.Method, sanitizedURL, e.Status, e.Body)
 	}
-	return fmt.Sprintf("backlog request failed: %s %s returned %s", e.Method, e.URL, e.Status)
+	return fmt.Sprintf("backlog request failed: %s %s returned %s", e.Method, sanitizedURL, e.Status)
 }
 
 func (e *HTTPStatusError) HTTPStatusCode() int {
@@ -62,4 +65,20 @@ func IsTemporaryError(err error) bool {
 
 	var netErr net.Error
 	return errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary())
+}
+
+func sanitizeURL(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		prefix, _, _ := strings.Cut(raw, "?")
+		return prefix
+	}
+
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String()
 }
