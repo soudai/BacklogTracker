@@ -13,10 +13,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/soudai/BacklogTracker/internal/accountreport"
 	"github.com/soudai/BacklogTracker/internal/config"
 	"github.com/soudai/BacklogTracker/internal/llm"
 	"github.com/soudai/BacklogTracker/internal/migrations"
 	notificationslack "github.com/soudai/BacklogTracker/internal/notifications/slack"
+	"github.com/soudai/BacklogTracker/internal/periodsummary"
 	"github.com/soudai/BacklogTracker/internal/storage/sqlite"
 )
 
@@ -404,6 +406,136 @@ func TestRunAccountReportDryRunPersistsArtifacts(t *testing.T) {
 	}
 }
 
+func TestRunPeriodSummaryDryRunSkipsNotifierSetup(t *testing.T) {
+	restoreProvider := stubLLMProvider(t, llm.GenerateResult{
+		Output: llm.PeriodSummaryOutput{
+			ReportType: "period_summary",
+			Headline:   "headline",
+			Overview:   "overview",
+			KeyPoints:  []string{"point"},
+			RiskItems:  []llm.PeriodSummaryRiskItem{},
+			Counts:     llm.PeriodSummaryCounts{Total: 1},
+		},
+		OutputJSON:  []byte(`{"reportType":"period_summary","headline":"headline","overview":"overview","keyPoints":["point"],"riskItems":[],"counts":{"total":1}}`),
+		RawResponse: []byte(`{"provider":"stub"}`),
+	}, nil)
+	defer restoreProvider()
+
+	restoreNotifier := stubSlackNotifier(t, nil, errors.New("notifier should not be initialized"))
+	defer restoreNotifier()
+
+	baseDir := t.TempDir()
+	envFile := filepath.Join(baseDir, ".env.local")
+	dbPath := filepath.Join(baseDir, "data", "tracker.sqlite3")
+	promptDir := filepath.Join(baseDir, "prompts")
+	backlogServer := startBacklogTestServer(t)
+	defer backlogServer.Close()
+	writePromptFixtures(t, promptDir)
+	writeEnvFile(t, envFile, map[string]string{
+		"BACKLOG_BASE_URL":    backlogServer.URL,
+		"BACKLOG_API_KEY":     "test-backlog-key",
+		"BACKLOG_PROJECT_KEY": "PROJ",
+		"LLM_PROVIDER":        "gemini",
+		"GEMINI_API_KEY":      "test-gemini-key",
+		"GEMINI_MODEL":        "gemini-2.5-pro",
+		"SQLITE_DB_PATH":      dbPath,
+		"REPORT_DIR":          filepath.Join(baseDir, "data", "reports"),
+		"RAW_RESPONSE_DIR":    filepath.Join(baseDir, "data", "raw"),
+		"PROMPT_DIR":          promptDir,
+		"PROMPT_PREVIEW_DIR":  filepath.Join(baseDir, "data", "prompt-previews"),
+	})
+	if err := migrations.ApplyAll(context.Background(), dbPath, repoMigrationDir(t)); err != nil {
+		t.Fatalf("ApplyAll returned error: %v", err)
+	}
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	exitCode := Run(
+		context.Background(),
+		[]string{"period-summary", "--dry-run", "--project", "PROJ", "--from", "2026-03-01", "--to", "2026-03-07", "--env-file", envFile},
+		strings.NewReader(""),
+		stdout,
+		stderr,
+	)
+
+	if exitCode != ExitCodeOK {
+		t.Fatalf("Run exit code = %d, want %d; stderr=%q", exitCode, ExitCodeOK, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "notification: skipped (dry-run)") {
+		t.Fatalf("stdout = %q, want dry-run notification status", stdout.String())
+	}
+}
+
+func TestRunAccountReportDryRunSkipsNotifierSetup(t *testing.T) {
+	restoreProvider := stubLLMProvider(t, llm.GenerateResult{
+		Output: llm.AccountReportOutput{
+			ReportType: "account_report",
+			Account:    llm.AccountReportAccount{ID: "alice", DisplayName: "Alice"},
+			Summary:    "summary",
+			Issues: []llm.AccountReportIssue{
+				{
+					IssueKey: "PROJ-1",
+					Title:    "Issue summary",
+					Status:   "Open",
+					Summary:  "Issue summary",
+					ResponseSuggestion: llm.AccountReportResponseSuggestion{
+						Message:           "Reply",
+						Confidence:        "high",
+						NeedsConfirmation: false,
+					},
+				},
+			},
+		},
+		OutputJSON:  []byte(`{"reportType":"account_report","account":{"id":"alice","displayName":"Alice"},"summary":"summary","issues":[{"issueKey":"PROJ-1","title":"Issue summary","status":"Open","summary":"Issue summary","responseSuggestion":{"message":"Reply","confidence":"high","needsConfirmation":false}}]}`),
+		RawResponse: []byte(`{"provider":"stub"}`),
+	}, nil)
+	defer restoreProvider()
+
+	restoreNotifier := stubSlackNotifier(t, nil, errors.New("notifier should not be initialized"))
+	defer restoreNotifier()
+
+	baseDir := t.TempDir()
+	envFile := filepath.Join(baseDir, ".env.local")
+	dbPath := filepath.Join(baseDir, "data", "tracker.sqlite3")
+	promptDir := filepath.Join(baseDir, "prompts")
+	backlogServer := startBacklogTestServer(t)
+	defer backlogServer.Close()
+	writePromptFixtures(t, promptDir)
+	writeEnvFile(t, envFile, map[string]string{
+		"BACKLOG_BASE_URL":    backlogServer.URL,
+		"BACKLOG_API_KEY":     "test-backlog-key",
+		"BACKLOG_PROJECT_KEY": "PROJ",
+		"LLM_PROVIDER":        "gemini",
+		"GEMINI_API_KEY":      "test-gemini-key",
+		"GEMINI_MODEL":        "gemini-2.5-pro",
+		"SQLITE_DB_PATH":      dbPath,
+		"REPORT_DIR":          filepath.Join(baseDir, "data", "reports"),
+		"RAW_RESPONSE_DIR":    filepath.Join(baseDir, "data", "raw"),
+		"PROMPT_DIR":          promptDir,
+		"PROMPT_PREVIEW_DIR":  filepath.Join(baseDir, "data", "prompt-previews"),
+	})
+	if err := migrations.ApplyAll(context.Background(), dbPath, repoMigrationDir(t)); err != nil {
+		t.Fatalf("ApplyAll returned error: %v", err)
+	}
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	exitCode := Run(
+		context.Background(),
+		[]string{"account-report", "--dry-run", "--project", "PROJ", "--account", "alice", "--env-file", envFile},
+		strings.NewReader(""),
+		stdout,
+		stderr,
+	)
+
+	if exitCode != ExitCodeOK {
+		t.Fatalf("Run exit code = %d, want %d; stderr=%q", exitCode, ExitCodeOK, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "notification: skipped (dry-run)") {
+		t.Fatalf("stdout = %q, want dry-run notification status", stdout.String())
+	}
+}
+
 func TestRunPeriodSummaryDryRunReturnsExitCodeLLMOnProviderFailure(t *testing.T) {
 	restoreProvider := stubLLMProvider(t, llm.GenerateResult{}, errors.New("provider failed"))
 	defer restoreProvider()
@@ -576,6 +708,50 @@ func TestRunAccountReportReturnsExitCodeSlackOnNotifierFailure(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "slack failed") {
 		t.Fatalf("stderr = %q, want slack failure", stderr.String())
+	}
+}
+
+func TestExitCodeForPeriodSummaryError(t *testing.T) {
+	testCases := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{name: "non app error", err: errors.New("boom"), want: ExitCodeInput},
+		{name: "input", err: &periodsummary.Error{Kind: periodsummary.KindInput, Err: errors.New("boom")}, want: ExitCodeInput},
+		{name: "backlog", err: &periodsummary.Error{Kind: periodsummary.KindBacklog, Err: errors.New("boom")}, want: ExitCodeBacklog},
+		{name: "llm", err: &periodsummary.Error{Kind: periodsummary.KindLLM, Err: errors.New("boom")}, want: ExitCodeLLM},
+		{name: "slack", err: &periodsummary.Error{Kind: periodsummary.KindSlack, Err: errors.New("boom")}, want: ExitCodeSlack},
+		{name: "storage", err: &periodsummary.Error{Kind: periodsummary.KindStorage, Err: errors.New("boom")}, want: ExitCodeStorage},
+		{name: "unknown kind", err: &periodsummary.Error{Kind: "other", Err: errors.New("boom")}, want: ExitCodeInput},
+	}
+
+	for _, testCase := range testCases {
+		if got := exitCodeForPeriodSummaryError(testCase.err); got != testCase.want {
+			t.Fatalf("%s: exitCodeForPeriodSummaryError(%v) = %d, want %d", testCase.name, testCase.err, got, testCase.want)
+		}
+	}
+}
+
+func TestExitCodeForAccountReportError(t *testing.T) {
+	testCases := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{name: "non app error", err: errors.New("boom"), want: ExitCodeInput},
+		{name: "input", err: &accountreport.Error{Kind: accountreport.KindInput, Err: errors.New("boom")}, want: ExitCodeInput},
+		{name: "backlog", err: &accountreport.Error{Kind: accountreport.KindBacklog, Err: errors.New("boom")}, want: ExitCodeBacklog},
+		{name: "llm", err: &accountreport.Error{Kind: accountreport.KindLLM, Err: errors.New("boom")}, want: ExitCodeLLM},
+		{name: "slack", err: &accountreport.Error{Kind: accountreport.KindSlack, Err: errors.New("boom")}, want: ExitCodeSlack},
+		{name: "storage", err: &accountreport.Error{Kind: accountreport.KindStorage, Err: errors.New("boom")}, want: ExitCodeStorage},
+		{name: "unknown kind", err: &accountreport.Error{Kind: "other", Err: errors.New("boom")}, want: ExitCodeInput},
+	}
+
+	for _, testCase := range testCases {
+		if got := exitCodeForAccountReportError(testCase.err); got != testCase.want {
+			t.Fatalf("%s: exitCodeForAccountReportError(%v) = %d, want %d", testCase.name, testCase.err, got, testCase.want)
+		}
 	}
 }
 

@@ -153,6 +153,75 @@ func TestGeminiProviderGenerateAccountReport(t *testing.T) {
 	}
 }
 
+func TestNewFromConfigSelectsConfiguredProvider(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name   string
+		cfg    config.Config
+		assert func(*testing.T, Provider)
+	}{
+		{
+			name: "chatgpt",
+			cfg: config.Config{
+				LLMProvider:       config.ProviderChatGPT,
+				LLMTimeoutSeconds: 10,
+				OpenAIAPIKey:      "openai-key",
+				OpenAIModel:       "gpt-test",
+			},
+			assert: func(t *testing.T, provider Provider) {
+				t.Helper()
+				if _, ok := provider.(*openAIProvider); !ok {
+					t.Fatalf("provider type = %T, want *openAIProvider", provider)
+				}
+			},
+		},
+		{
+			name: "gemini",
+			cfg: config.Config{
+				LLMProvider:       config.ProviderGemini,
+				LLMTimeoutSeconds: 10,
+				GeminiAPIKey:      "gemini-key",
+				GeminiModel:       "gemini-test",
+			},
+			assert: func(t *testing.T, provider Provider) {
+				t.Helper()
+				if _, ok := provider.(*geminiProvider); !ok {
+					t.Fatalf("provider type = %T, want *geminiProvider", provider)
+				}
+			},
+		},
+	}
+
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			provider, err := NewFromConfig(testCase.cfg)
+			if err != nil {
+				t.Fatalf("NewFromConfig returned error: %v", err)
+			}
+			testCase.assert(t, provider)
+		})
+	}
+}
+
+func TestNewFromConfigRejectsUnsupportedProvider(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewFromConfig(config.Config{
+		LLMProvider:       "unsupported",
+		LLMTimeoutSeconds: 10,
+	})
+	if err == nil {
+		t.Fatalf("NewFromConfig expected error")
+	}
+	if got, want := err.Error(), `unsupported LLM provider "unsupported"`; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+}
+
 func assertGeminiRequestBody(t *testing.T, body io.Reader) {
 	t.Helper()
 
