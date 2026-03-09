@@ -300,6 +300,29 @@ func TestValidateStructuredOutputRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestValidateStructuredOutputAcceptsNullOptionalPeriodSummaryCounts(t *testing.T) {
+	t.Parallel()
+
+	output, canonicalJSON, err := ValidateStructuredOutput(
+		prompts.TaskPeriodSummary,
+		[]byte(`{"reportType":"period_summary","headline":"h","overview":"o","keyPoints":[],"riskItems":[],"counts":{"total":1,"open":null,"inProgress":null,"resolved":null,"closed":null}}`),
+	)
+	if err != nil {
+		t.Fatalf("ValidateStructuredOutput returned error: %v", err)
+	}
+
+	periodSummary, ok := output.(PeriodSummaryOutput)
+	if !ok {
+		t.Fatalf("output type = %T, want PeriodSummaryOutput", output)
+	}
+	if periodSummary.Counts.Open != nil || periodSummary.Counts.InProgress != nil || periodSummary.Counts.Resolved != nil || periodSummary.Counts.Closed != nil {
+		t.Fatalf("counts = %#v, want nil optional fields", periodSummary.Counts)
+	}
+	if got, want := string(canonicalJSON), `{"reportType":"period_summary","headline":"h","overview":"o","keyPoints":[],"riskItems":[],"counts":{"total":1}}`; got != want {
+		t.Fatalf("canonicalJSON = %s, want %s", got, want)
+	}
+}
+
 func TestSaveRawResponse(t *testing.T) {
 	t.Parallel()
 

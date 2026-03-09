@@ -41,7 +41,7 @@ const periodSummaryOutputSchema = `{
     "counts": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["total"],
+      "required": ["total", "open", "inProgress", "resolved", "closed"],
       "properties": {
         "total": { "type": "integer" },
         "open": { "type": ["integer", "null"] },
