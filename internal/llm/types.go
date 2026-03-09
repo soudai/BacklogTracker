@@ -192,7 +192,7 @@ func validatePeriodSummaryOutput(rawJSON []byte) (PeriodSummaryOutput, error) {
 		ReportType: *wire.ReportType,
 		Headline:   *wire.Headline,
 		Overview:   *wire.Overview,
-		KeyPoints:  append([]string(nil), wire.KeyPoints...),
+		KeyPoints:  append(make([]string, 0, len(wire.KeyPoints)), wire.KeyPoints...),
 		RiskItems:  riskItems,
 		Counts: PeriodSummaryCounts{
 			Total:      *wire.Counts.Total,

@@ -1,6 +1,7 @@
 package prompts
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -227,6 +228,40 @@ func TestManagerRenderRejectsMissingTemplateFiles(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "load system template") {
 		t.Fatalf("Render error = %q, want missing template message", err.Error())
+	}
+}
+
+func TestOutputSchemaJSONPeriodSummaryRequiresAllCountProperties(t *testing.T) {
+	t.Parallel()
+
+	schemaJSON, err := OutputSchemaJSON(TaskPeriodSummary)
+	if err != nil {
+		t.Fatalf("OutputSchemaJSON returned error: %v", err)
+	}
+
+	var schema struct {
+		Properties map[string]struct {
+			Required   []string               `json:"required"`
+			Properties map[string]interface{} `json:"properties"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(schemaJSON), &schema); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	counts, ok := schema.Properties["counts"]
+	if !ok {
+		t.Fatalf("schema missing counts property")
+	}
+
+	requiredSet := map[string]struct{}{}
+	for _, name := range counts.Required {
+		requiredSet[name] = struct{}{}
+	}
+	for name := range counts.Properties {
+		if _, ok := requiredSet[name]; !ok {
+			t.Fatalf("counts.required is missing %q", name)
+		}
 	}
 }
 
