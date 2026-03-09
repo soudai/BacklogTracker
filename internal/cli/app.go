@@ -8,15 +8,19 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/soudai/BacklogTracker/internal/config"
 	"github.com/soudai/BacklogTracker/internal/initconfig"
+	"github.com/soudai/BacklogTracker/internal/prompts"
+	"github.com/soudai/BacklogTracker/internal/storage/sqlite"
 )
 
 const (
-	ExitCodeOK    = 0
-	ExitCodeInput = 1
-	ExitCodeInit  = 6
+	ExitCodeOK      = 0
+	ExitCodeInput   = 1
+	ExitCodeStorage = 5
+	ExitCodeInit    = 6
 )
 
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -29,9 +33,9 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	case "init":
 		return runInit(ctx, args[1:], stdin, stdout, stderr)
 	case "period-summary":
-		return runReportStub("period-summary", args[1:], stdout, stderr)
+		return runReportStub(ctx, "period-summary", args[1:], stdout, stderr)
 	case "account-report":
-		return runReportStub("account-report", args[1:], stdout, stderr)
+		return runReportStub(ctx, "account-report", args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		printUsage(stdout)
 		return ExitCodeOK
@@ -93,7 +97,7 @@ func runInit(ctx context.Context, args []string, stdin io.Reader, stdout, stderr
 	return ExitCodeOK
 }
 
-func runReportStub(name string, args []string, stdout, stderr io.Writer) int {
+func runReportStub(ctx context.Context, name string, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
@@ -101,25 +105,32 @@ func runReportStub(name string, args []string, stdout, stderr io.Writer) int {
 	provider := flags.String("provider", "", "LLM provider")
 	timezone := flags.String("timezone", "", "timezone")
 	flags.String("notify", "slack", "notification target")
-	flags.Bool("dry-run", false, "run read-only execution")
+	dryRun := flags.Bool("dry-run", false, "run read-only execution")
 	outputDir := flags.String("output-dir", "", "report output directory")
 	dbPath := flags.String("db-path", "", "sqlite database path")
 	promptDir := flags.String("prompt-dir", "", "prompt directory")
 	envFile := flags.String("env-file", config.DefaultEnvFile, "env file")
 	flags.Bool("verbose", false, "verbose logging")
 
+	var from string
+	var to string
+	var dateField string
+	var assignee string
+	var statuses stringSliceFlag
+	var account string
+	var maxComments int
 	if name == "period-summary" {
-		flags.String("from", "", "from date")
-		flags.String("to", "", "to date")
-		flags.String("date-field", "updated", "date field")
-		flags.String("assignee", "", "assignee")
-		flags.Var(&stringSliceFlag{}, "status", "status")
+		flags.StringVar(&from, "from", "", "from date")
+		flags.StringVar(&to, "to", "", "to date")
+		flags.StringVar(&dateField, "date-field", "updated", "date field")
+		flags.StringVar(&assignee, "assignee", "", "assignee")
+		flags.Var(&statuses, "status", "status")
 	}
 	if name == "account-report" {
-		flags.String("account", "", "Backlog account")
-		flags.String("from", "", "from date")
-		flags.String("to", "", "to date")
-		flags.Int("max-comments", 0, "maximum comments")
+		flags.StringVar(&account, "account", "", "Backlog account")
+		flags.StringVar(&from, "from", "", "from date")
+		flags.StringVar(&to, "to", "", "to date")
+		flags.IntVar(&maxComments, "max-comments", 0, "maximum comments")
 	}
 
 	if err := flags.Parse(args); err != nil {
@@ -153,6 +164,28 @@ func runReportStub(name string, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "parse config: %v\n", err)
 		return ExitCodeInput
 	}
+
+	if *dryRun {
+		if err := validateDryRunConfig(cfg); err != nil {
+			fmt.Fprintf(stderr, "invalid dry-run config: %v\n", err)
+			return ExitCodeInput
+		}
+		return runPromptDryRun(ctx, reportDryRunOptions{
+			CommandName: name,
+			BaseDir:     baseDir,
+			Config:      cfg,
+			From:        from,
+			To:          to,
+			DateField:   dateField,
+			Assignee:    assignee,
+			Statuses:    append([]string(nil), statuses...),
+			Account:     account,
+			MaxComments: maxComments,
+			StdOut:      stdout,
+			StdErr:      stderr,
+		})
+	}
+
 	if err := cfg.ValidateForReport(); err != nil {
 		fmt.Fprintf(stderr, "invalid config: %v\n", err)
 		return ExitCodeInput
@@ -160,6 +193,197 @@ func runReportStub(name string, args []string, stdout, stderr io.Writer) int {
 
 	fmt.Fprintf(stdout, "%s is not implemented on this branch yet.\n", name)
 	return ExitCodeOK
+}
+
+type reportDryRunOptions struct {
+	CommandName string
+	BaseDir     string
+	Config      config.Config
+	From        string
+	To          string
+	DateField   string
+	Assignee    string
+	Statuses    []string
+	Account     string
+	MaxComments int
+	StdOut      io.Writer
+	StdErr      io.Writer
+}
+
+func runPromptDryRun(ctx context.Context, opts reportDryRunOptions) int {
+	task, err := prompts.ParseTask(opts.CommandName)
+	if err != nil {
+		fmt.Fprintf(opts.StdErr, "dry-run failed: %v\n", err)
+		return ExitCodeInput
+	}
+
+	data, err := buildPromptTemplateData(task, opts)
+	if err != nil {
+		fmt.Fprintf(opts.StdErr, "dry-run failed: %v\n", err)
+		return ExitCodeInput
+	}
+
+	now := time.Now().UTC()
+	manager := prompts.Manager{
+		PromptDir:     config.ResolvePath(opts.BaseDir, opts.Config.PromptDir),
+		PreviewDir:    config.ResolvePath(opts.BaseDir, opts.Config.PromptPreviewDir),
+		RetentionDays: opts.Config.PromptArtifactRetentionDays,
+		Now: func() time.Time {
+			return now
+		},
+	}
+
+	rendered, err := manager.Render(task, data)
+	if err != nil {
+		fmt.Fprintf(opts.StdErr, "dry-run failed: %v\n", err)
+		return ExitCodeStorage
+	}
+
+	jobID := buildDryRunJobID(task, now)
+	previewPath, err := manager.SavePreview(jobID, rendered)
+	if err != nil {
+		fmt.Fprintf(opts.StdErr, "dry-run failed: %v\n", err)
+		return ExitCodeStorage
+	}
+
+	if err := savePromptDryRun(ctx, opts, task, jobID, previewPath, rendered, now); err != nil {
+		fmt.Fprintf(opts.StdErr, "dry-run failed: %v\n", err)
+		return ExitCodeStorage
+	}
+
+	fmt.Fprintf(opts.StdOut, "job_id: %s\nprompt_hash: %s\npreview_path: %s\n\n", jobID, rendered.Hash, previewPath)
+	fmt.Fprintln(opts.StdOut, "--- SYSTEM ---")
+	fmt.Fprintln(opts.StdOut, rendered.System)
+	fmt.Fprintln(opts.StdOut)
+	fmt.Fprintln(opts.StdOut, "--- USER ---")
+	fmt.Fprintln(opts.StdOut, rendered.User)
+	return ExitCodeOK
+}
+
+func buildPromptTemplateData(task prompts.Task, opts reportDryRunOptions) (map[string]any, error) {
+	outputSchema, err := prompts.OutputSchemaJSON(task)
+	if err != nil {
+		return nil, err
+	}
+
+	switch task {
+	case prompts.TaskPeriodSummary:
+		if strings.TrimSpace(opts.From) == "" || strings.TrimSpace(opts.To) == "" {
+			return nil, fmt.Errorf("--from and --to are required for period-summary --dry-run")
+		}
+		return map[string]any{
+			"ProjectKey":       opts.Config.BacklogProjectKey,
+			"ProjectName":      opts.Config.BacklogProjectKey,
+			"DateFrom":         opts.From,
+			"DateTo":           opts.To,
+			"IssueCount":       0,
+			"IssuesJSON":       "[]",
+			"OutputSchemaJSON": outputSchema,
+			"Language":         "ja",
+		}, nil
+	case prompts.TaskAccountReport:
+		if strings.TrimSpace(opts.Account) == "" {
+			return nil, fmt.Errorf("--account is required for account-report --dry-run")
+		}
+		return map[string]any{
+			"AccountID":        opts.Account,
+			"AccountName":      opts.Account,
+			"DateFrom":         defaultString(opts.From, "(not specified)"),
+			"DateTo":           defaultString(opts.To, "(not specified)"),
+			"IssuesJSON":       "[]",
+			"OutputSchemaJSON": outputSchema,
+			"Language":         "ja",
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported prompt task %q", task)
+	}
+}
+
+func savePromptDryRun(ctx context.Context, opts reportDryRunOptions, task prompts.Task, jobID, previewPath string, rendered prompts.RenderedPrompt, now time.Time) error {
+	store, err := sqlite.Open(config.ResolvePath(opts.BaseDir, opts.Config.SQLiteDBPath))
+	if err != nil {
+		return fmt.Errorf("open sqlite store: %w", err)
+	}
+	defer store.Close()
+
+	var targetAccount *string
+	if strings.TrimSpace(opts.Account) != "" {
+		targetAccount = &opts.Account
+	}
+	promptName := string(task)
+	promptHash := rendered.Hash
+	finishedAt := now
+
+	if err := store.JobRuns().Save(ctx, sqlite.JobRun{
+		JobID:         jobID,
+		JobType:       string(task),
+		Provider:      string(opts.Config.LLMProvider),
+		ProjectKey:    opts.Config.BacklogProjectKey,
+		TargetAccount: targetAccount,
+		Status:        "completed",
+		PromptName:    &promptName,
+		PromptHash:    &promptHash,
+		StartedAt:     now,
+		FinishedAt:    &finishedAt,
+	}); err != nil {
+		return fmt.Errorf("save job_run: %w", err)
+	}
+
+	if err := store.PromptRuns().Save(ctx, sqlite.PromptRun{
+		JobID:              jobID,
+		TaskType:           string(task),
+		SystemTemplate:     rendered.SystemTemplate,
+		UserTemplate:       rendered.UserTemplate,
+		PromptHash:         rendered.Hash,
+		RenderedPromptPath: stringPointer(previewPath),
+		CreatedAt:          now,
+	}); err != nil {
+		return fmt.Errorf("save prompt_run: %w", err)
+	}
+
+	return nil
+}
+
+func buildDryRunJobID(task prompts.Task, now time.Time) string {
+	return fmt.Sprintf("%s-%s", task, now.UTC().Format("20060102T150405.000000000"))
+}
+
+func stringPointer(value string) *string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return &value
+}
+
+func defaultString(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
+func validateDryRunConfig(cfg config.Config) error {
+	required := []struct {
+		name  string
+		value string
+	}{
+		{name: "BACKLOG_PROJECT_KEY", value: cfg.BacklogProjectKey},
+		{name: "SQLITE_DB_PATH", value: cfg.SQLiteDBPath},
+		{name: "PROMPT_DIR", value: cfg.PromptDir},
+		{name: "PROMPT_PREVIEW_DIR", value: cfg.PromptPreviewDir},
+	}
+
+	var missing []string
+	for _, setting := range required {
+		if strings.TrimSpace(setting.value) == "" {
+			missing = append(missing, setting.name)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("missing required settings: %s", strings.Join(missing, ", "))
+	}
+
+	return nil
 }
 
 func printUsage(out io.Writer) {
