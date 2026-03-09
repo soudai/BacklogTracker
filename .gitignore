@@ -24,8 +24,18 @@ profile.cov
 go.work
 go.work.sum
 
-# env file
+# env files
 .env
+.env.local
+
+# generated local data
+data/
+reports/
+raw/
+prompt-previews/
+*.sqlite
+*.sqlite3
+*.db
 
 # Editor/IDE
 # .idea/
