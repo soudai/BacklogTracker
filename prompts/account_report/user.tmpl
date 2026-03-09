@@ -1,0 +1,15 @@
+対象アカウント:
+- accountId: {{ .AccountID }}
+- accountName: {{ .AccountName }}
+
+対象期間:
+- from: {{ .DateFrom }}
+- to: {{ .DateTo }}
+
+課題一覧(JSON):
+{{ .IssuesJSON }}
+
+出力スキーマ(JSON Schema):
+{{ .OutputSchemaJSON }}
+
+各課題について短い要約と、必要なら返信のたたき台を提案してください。

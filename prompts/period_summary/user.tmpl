@@ -1,0 +1,18 @@
+対象プロジェクト:
+- projectKey: {{ .ProjectKey }}
+- projectName: {{ .ProjectName }}
+
+対象期間:
+- from: {{ .DateFrom }}
+- to: {{ .DateTo }}
+
+対象件数:
+- total: {{ .IssueCount }}
+
+課題一覧(JSON):
+{{ .IssuesJSON }}
+
+出力スキーマ(JSON Schema):
+{{ .OutputSchemaJSON }}
+
+この期間の重要トピック、リスク、件数サマリを簡潔にまとめてください。
