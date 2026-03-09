@@ -123,7 +123,7 @@ type reportIssue struct {
 
 func (s Service) Run(ctx context.Context, input Input) (result Result, err error) {
 	if err := s.validate(); err != nil {
-		return Result{}, &Error{Kind: KindStorage, Err: err}
+		return Result{}, &Error{Kind: KindInput, Err: err}
 	}
 	if strings.TrimSpace(s.Config.BacklogProjectKey) == "" {
 		return Result{}, &Error{Kind: KindInput, Err: fmt.Errorf("BACKLOG_PROJECT_KEY is required")}
@@ -290,7 +290,7 @@ func (s Service) Run(ctx context.Context, input Input) (result Result, err error
 			saveErr := s.Store.NotificationLogs().Save(ctx, sqlite.NotificationLog{
 				JobID:           result.JobID,
 				ChannelType:     "slack",
-				Destination:     stringPointer(notificationDestination(s.Config, "")),
+				Destination:     stringPointer(notificationDestination(s.Config)),
 				Status:          "failed",
 				ResponseSummary: stringPointer(notifyErr.Error()),
 				SentAt:          timePointer(s.now().UTC()),
@@ -533,11 +533,19 @@ func sanitizeLines(values []string) []string {
 func sanitizeRiskLines(items []llm.PeriodSummaryRiskItem) []string {
 	lines := make([]string, 0, len(items))
 	for _, item := range items {
+		issueKey := strings.TrimSpace(item.IssueKey)
 		reason := sanitizeSlackText(item.Reason)
-		if strings.TrimSpace(item.IssueKey) == "" && reason == "" {
+		if issueKey == "" && reason == "" {
 			continue
 		}
-		lines = append(lines, truncateSlackMarkdown(strings.TrimSpace(item.IssueKey+": "+reason), 280))
+		line := reason
+		if issueKey != "" {
+			line = issueKey
+			if reason != "" {
+				line += ": " + reason
+			}
+		}
+		lines = append(lines, truncateSlackMarkdown(strings.TrimSpace(line), 280))
 	}
 	return lines
 }
@@ -716,12 +724,12 @@ func intPointer(value int) *int {
 	return &value
 }
 
-func notificationDestination(cfg config.Config, fallback string) string {
+func notificationDestination(cfg config.Config) string {
+	if strings.TrimSpace(cfg.SlackWebhookURL) != "" {
+		return "incoming-webhook"
+	}
 	if strings.TrimSpace(cfg.SlackChannel) != "" {
 		return cfg.SlackChannel
 	}
-	if strings.TrimSpace(fallback) != "" {
-		return fallback
-	}
-	return "incoming-webhook"
+	return "slack"
 }

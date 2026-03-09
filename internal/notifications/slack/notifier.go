@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -361,7 +362,15 @@ func retryDelay(attempt int) time.Duration {
 
 func IsTemporaryError(err error) bool {
 	statusCode, ok := StatusCode(err)
-	return ok && (statusCode == http.StatusTooManyRequests || statusCode >= 500)
+	if ok && (statusCode == http.StatusTooManyRequests || statusCode >= 500) {
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	var netErr net.Error
+	return errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary())
 }
 
 func StatusCode(err error) (int, bool) {

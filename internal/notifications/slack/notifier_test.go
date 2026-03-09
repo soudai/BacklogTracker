@@ -3,10 +3,12 @@ package slack
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/soudai/BacklogTracker/internal/config"
 )
@@ -96,4 +98,73 @@ func TestHTTPStatusErrorRedactsWebhookPath(t *testing.T) {
 	if !strings.Contains(message, "https://hooks.slack.com") {
 		t.Fatalf("error message = %q, want host-only URL", message)
 	}
+}
+
+func TestIsTemporaryErrorRecognizesContextAndNetErrors(t *testing.T) {
+	t.Parallel()
+
+	if !IsTemporaryError(context.DeadlineExceeded) {
+		t.Fatalf("context.DeadlineExceeded should be temporary")
+	}
+
+	timeoutErr := &temporaryNetError{timeout: true}
+	if !IsTemporaryError(timeoutErr) {
+		t.Fatalf("timeout net error should be temporary")
+	}
+
+	wrapped := errors.New("wrapper: " + timeoutErr.Error())
+	if IsTemporaryError(wrapped) {
+		t.Fatalf("plain wrapped string error should not be temporary")
+	}
+}
+
+func TestWebhookNotifierRetriesTemporaryTransportErrors(t *testing.T) {
+	t.Parallel()
+
+	attempts := 0
+	httpClient := &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			attempts++
+			if attempts == 1 {
+				return nil, &temporaryNetError{timeout: true}
+			}
+			recorder := httptest.NewRecorder()
+			recorder.WriteHeader(http.StatusOK)
+			_, _ = recorder.WriteString("ok")
+			return recorder.Result(), nil
+		}),
+		Timeout: time.Second,
+	}
+
+	notifier, err := NewFromConfig(config.Config{
+		SlackWebhookURL: "https://hooks.slack.com/services/T000/B000/SECRET",
+	}, WithHTTPClient(httpClient), WithMaxRetries(1), WithSleep(func(context.Context, time.Duration) error { return nil }))
+	if err != nil {
+		t.Fatalf("NewFromConfig returned error: %v", err)
+	}
+
+	response, err := notifier.Send(context.Background(), Message{Text: "summary"})
+	if err != nil {
+		t.Fatalf("Send returned error: %v", err)
+	}
+	if got, want := attempts, 2; got != want {
+		t.Fatalf("attempts = %d, want %d", got, want)
+	}
+	if got, want := response.Summary, "ok"; got != want {
+		t.Fatalf("response.Summary = %q, want %q", got, want)
+	}
+}
+
+type temporaryNetError struct {
+	timeout bool
+}
+
+func (e *temporaryNetError) Error() string   { return "temporary transport error" }
+func (e *temporaryNetError) Timeout() bool   { return e.timeout }
+func (e *temporaryNetError) Temporary() bool { return true }
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return fn(r)
 }

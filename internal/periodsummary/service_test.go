@@ -3,6 +3,7 @@ package periodsummary
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -229,6 +230,88 @@ func TestServiceRunSendsSanitizedSlackMessage(t *testing.T) {
 	}
 }
 
+func TestServiceRunLogsWebhookDestinationOnSlackFailure(t *testing.T) {
+	t.Parallel()
+
+	baseDir := t.TempDir()
+	store := openStore(t, baseDir)
+	defer store.Close()
+
+	promptDir := filepath.Join(baseDir, "prompts")
+	previewDir := filepath.Join(baseDir, "data", "prompt-previews")
+	writePromptFixtures(t, promptDir)
+
+	now := time.Date(2026, 3, 10, 10, 0, 0, 0, time.UTC)
+	service := Service{
+		BaseDir: baseDir,
+		Config: config.Config{
+			BacklogProjectKey:           "PROJ",
+			LLMProvider:                 config.ProviderGemini,
+			ReportDir:                   "./data/reports",
+			RawResponseDir:              "./data/raw",
+			PromptPreviewDir:            "./data/prompt-previews",
+			PromptArtifactRetentionDays: 30,
+			SlackWebhookURL:             "https://hooks.slack.com/services/T000/B000/SECRET",
+			SlackChannel:                "#alerts",
+		},
+		Collector: &fakeCollector{
+			issues: []backlogclient.Issue{{IssueKey: "PROJ-1", Summary: "Issue summary"}},
+		},
+		Statuses: &fakeStatusLister{},
+		PromptManager: prompts.Manager{
+			PromptDir:     promptDir,
+			PreviewDir:    previewDir,
+			RetentionDays: 30,
+			Now:           func() time.Time { return now },
+		},
+		LLMProvider: &fakeLLMProvider{
+			result: llm.GenerateResult{
+				Output: llm.PeriodSummaryOutput{
+					ReportType: "period_summary",
+					Headline:   "headline",
+					Overview:   "overview",
+					KeyPoints:  []string{"point"},
+					RiskItems:  []llm.PeriodSummaryRiskItem{},
+					Counts:     llm.PeriodSummaryCounts{Total: 1},
+				},
+				OutputJSON:  []byte(`{"reportType":"period_summary","headline":"headline","overview":"overview","keyPoints":["point"],"riskItems":[],"counts":{"total":1}}`),
+				RawResponse: []byte(`{"provider":"stub"}`),
+			},
+		},
+		Notifier:        &fakeNotifier{err: errors.New("slack failed")},
+		Store:           store,
+		SaveRawResponse: llm.SaveRawResponse,
+		Now:             func() time.Time { return now },
+	}
+
+	_, err := service.Run(context.Background(), Input{
+		From: time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2026, 3, 7, 0, 0, 0, 0, time.UTC),
+	})
+	var appErr *Error
+	if !errors.As(err, &appErr) {
+		t.Fatalf("Run error = %v, want *Error", err)
+	}
+	if got, want := appErr.Kind, KindSlack; got != want {
+		t.Fatalf("appErr.Kind = %q, want %q", got, want)
+	}
+
+	jobRuns, err := store.JobRuns().GetByJobID(context.Background(), buildJobID(now))
+	if err != nil {
+		t.Fatalf("GetByJobID returned error: %v", err)
+	}
+	logs, err := store.NotificationLogs().ListByJobID(context.Background(), jobRuns.JobID)
+	if err != nil {
+		t.Fatalf("ListByJobID returned error: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("notification log count = %d, want 1", len(logs))
+	}
+	if logs[0].Destination == nil || *logs[0].Destination != "incoming-webhook" {
+		t.Fatalf("notification destination = %v, want incoming-webhook", logs[0].Destination)
+	}
+}
+
 func TestTruncateSlackTextPreservesUTF8(t *testing.T) {
 	t.Parallel()
 
@@ -278,6 +361,47 @@ func TestBuildSlackMessageTruncatesJoinedSections(t *testing.T) {
 		if utf8.RuneCountInString(text) > 2800 {
 			t.Fatalf("section text length = %d, want <= 2800", utf8.RuneCountInString(text))
 		}
+	}
+}
+
+func TestBuildSlackMessageOmitsColonWhenRiskIssueKeyIsBlank(t *testing.T) {
+	t.Parallel()
+
+	message := BuildSlackMessage(config.Config{BacklogProjectKey: "PROJ"}, Input{
+		From: time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2026, 3, 7, 0, 0, 0, 0, time.UTC),
+	}, 1, llm.PeriodSummaryOutput{
+		ReportType: "period_summary",
+		Headline:   "headline",
+		Overview:   "overview",
+		RiskItems: []llm.PeriodSummaryRiskItem{
+			{IssueKey: "", Reason: "reason only"},
+		},
+		Counts: llm.PeriodSummaryCounts{Total: 1},
+	})
+
+	serialized, err := json.Marshal(message)
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+	if strings.Contains(string(serialized), ": reason only") {
+		t.Fatalf("message contains noisy colon prefix: %s", string(serialized))
+	}
+	if !strings.Contains(string(serialized), "reason only") {
+		t.Fatalf("message = %s, want reason text", string(serialized))
+	}
+}
+
+func TestServiceRunReturnsInputKindWhenDependenciesMissing(t *testing.T) {
+	t.Parallel()
+
+	_, err := (Service{}).Run(context.Background(), Input{})
+	var appErr *Error
+	if !errors.As(err, &appErr) {
+		t.Fatalf("Run error = %v, want *Error", err)
+	}
+	if got, want := appErr.Kind, KindInput; got != want {
+		t.Fatalf("appErr.Kind = %q, want %q", got, want)
 	}
 }
 
