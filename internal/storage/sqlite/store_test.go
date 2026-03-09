@@ -80,6 +80,30 @@ func TestStoreRepositoriesPersistRecords(t *testing.T) {
 	if run.TargetAccount == nil || *run.TargetAccount != targetAccount {
 		t.Fatalf("run.TargetAccount = %v, want %q", run.TargetAccount, targetAccount)
 	}
+	updatedPromptHash := "updated-hash"
+	updatedIssueCount := 4
+	updatedReportPath := filepath.Join(baseDir, "updated-report.md")
+	if err := jobRepo.UpdateArtifacts(ctx, "job-1", JobRunArtifactUpdate{
+		PromptHash: &updatedPromptHash,
+		IssueCount: &updatedIssueCount,
+		ReportPath: &updatedReportPath,
+	}); err != nil {
+		t.Fatalf("UpdateArtifacts returned error: %v", err)
+	}
+
+	run, err = jobRepo.GetByJobID(ctx, "job-1")
+	if err != nil {
+		t.Fatalf("GetByJobID after UpdateArtifacts returned error: %v", err)
+	}
+	if run.PromptHash == nil || *run.PromptHash != updatedPromptHash {
+		t.Fatalf("run.PromptHash = %v, want %q", run.PromptHash, updatedPromptHash)
+	}
+	if run.IssueCount == nil || *run.IssueCount != updatedIssueCount {
+		t.Fatalf("run.IssueCount = %v, want %d", run.IssueCount, updatedIssueCount)
+	}
+	if run.ReportPath == nil || *run.ReportPath != updatedReportPath {
+		t.Fatalf("run.ReportPath = %v, want %q", run.ReportPath, updatedReportPath)
+	}
 
 	destination := "slack://incoming-webhook"
 	responseSummary := "ok"

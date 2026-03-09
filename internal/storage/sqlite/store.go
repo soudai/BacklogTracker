@@ -41,6 +41,15 @@ type JobRunStatusUpdate struct {
 	ErrorMessage *string
 }
 
+type JobRunArtifactUpdate struct {
+	TargetAccount   *string
+	PromptName      *string
+	PromptHash      *string
+	IssueCount      *int
+	ReportPath      *string
+	RawResponsePath *string
+}
+
 type NotificationLog struct {
 	ID              int64
 	JobID           string
@@ -181,6 +190,41 @@ WHERE job_id = ?`,
 		return fmt.Errorf("update job_run %s: %w", jobID, err)
 	}
 
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read update result for job_run %s: %w", jobID, err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("job_run %s: %w", jobID, sql.ErrNoRows)
+	}
+	return nil
+}
+
+func (r *JobRunRepository) UpdateArtifacts(ctx context.Context, jobID string, update JobRunArtifactUpdate) error {
+	if strings.TrimSpace(jobID) == "" {
+		return fmt.Errorf("job_id is required")
+	}
+
+	result, err := r.db.ExecContext(ctx, `
+UPDATE job_runs
+SET target_account = COALESCE(?, target_account),
+    prompt_name = COALESCE(?, prompt_name),
+    prompt_hash = COALESCE(?, prompt_hash),
+    issue_count = COALESCE(?, issue_count),
+    report_path = COALESCE(?, report_path),
+    raw_response_path = COALESCE(?, raw_response_path)
+WHERE job_id = ?`,
+		nullableString(update.TargetAccount),
+		nullableString(update.PromptName),
+		nullableString(update.PromptHash),
+		nullableInt(update.IssueCount),
+		nullableString(update.ReportPath),
+		nullableString(update.RawResponsePath),
+		jobID,
+	)
+	if err != nil {
+		return fmt.Errorf("update job_run artifacts %s: %w", jobID, err)
+	}
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("read update result for job_run %s: %w", jobID, err)
@@ -440,6 +484,10 @@ func nullableInt(value *int) any {
 		return nil
 	}
 	return *value
+}
+
+func intPointer(value int) *int {
+	return &value
 }
 
 func nullableTime(value *time.Time) any {
