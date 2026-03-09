@@ -57,3 +57,62 @@ CREATE TABLE IF NOT EXISTS sample_items (
 		t.Fatalf("table count = %d, want 1", tableCount)
 	}
 }
+
+func TestInspectReportsAppliedAndPendingMigrations(t *testing.T) {
+	baseDir := t.TempDir()
+	dbPath := filepath.Join(baseDir, "tracker.sqlite3")
+	migrationDir := filepath.Join(baseDir, "migrations")
+	if err := os.MkdirAll(migrationDir, 0o755); err != nil {
+		t.Fatalf("create migration dir: %v", err)
+	}
+
+	firstMigration := `
+CREATE TABLE IF NOT EXISTS first_items (
+    id INTEGER PRIMARY KEY
+);
+`
+	secondMigration := `
+CREATE TABLE IF NOT EXISTS second_items (
+    id INTEGER PRIMARY KEY
+);
+`
+	if err := os.WriteFile(filepath.Join(migrationDir, "0001_first.sql"), []byte(firstMigration), 0o644); err != nil {
+		t.Fatalf("write first migration: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(migrationDir, "0002_second.sql"), []byte(secondMigration), 0o644); err != nil {
+		t.Fatalf("write second migration: %v", err)
+	}
+
+	statuses, err := Inspect(context.Background(), dbPath, migrationDir)
+	if err != nil {
+		t.Fatalf("Inspect returned error before apply: %v", err)
+	}
+	if len(statuses) != 2 {
+		t.Fatalf("status count = %d, want 2", len(statuses))
+	}
+	for _, status := range statuses {
+		if status.Applied {
+			t.Fatalf("status %s unexpectedly marked as applied", status.Version)
+		}
+		if status.AppliedAt != nil {
+			t.Fatalf("status %s has applied_at before apply", status.Version)
+		}
+	}
+
+	if err := ApplyAll(context.Background(), dbPath, migrationDir); err != nil {
+		t.Fatalf("ApplyAll returned error: %v", err)
+	}
+
+	statuses, err = Inspect(context.Background(), dbPath, migrationDir)
+	if err != nil {
+		t.Fatalf("Inspect returned error after apply: %v", err)
+	}
+	for _, status := range statuses {
+		if !status.Applied {
+			t.Fatalf("status %s not marked as applied", status.Version)
+		}
+		if status.AppliedAt == nil {
+			t.Fatalf("status %s missing applied_at", status.Version)
+		}
+	}
+}
