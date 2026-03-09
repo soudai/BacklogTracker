@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/soudai/BacklogTracker/internal/config"
@@ -77,5 +78,22 @@ func TestNewFromConfigRequiresChannelForBotToken(t *testing.T) {
 	}
 	if got, want := err.Error(), "SLACK_CHANNEL is required when using SLACK_BOT_TOKEN"; got != want {
 		t.Fatalf("error = %q, want %q", got, want)
+	}
+}
+
+func TestHTTPStatusErrorRedactsWebhookPath(t *testing.T) {
+	t.Parallel()
+
+	err := &HTTPStatusError{
+		Method: "POST",
+		URL:    "https://hooks.slack.com/services/T000/B000/SECRET?foo=bar#frag",
+		Status: "403 Forbidden",
+	}
+	message := err.Error()
+	if strings.Contains(message, "/services/") || strings.Contains(message, "SECRET") {
+		t.Fatalf("error message leaked webhook path: %q", message)
+	}
+	if !strings.Contains(message, "https://hooks.slack.com") {
+		t.Fatalf("error message = %q, want host-only URL", message)
 	}
 }

@@ -385,7 +385,9 @@ func sanitizeURL(raw string) string {
 		prefix, _, _ = strings.Cut(prefix, "#")
 		return prefix
 	}
+	parsed.Path = ""
+	parsed.RawPath = ""
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
-	return parsed.String()
+	return strings.TrimSuffix(parsed.String(), "/")
 }

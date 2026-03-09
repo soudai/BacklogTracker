@@ -385,7 +385,7 @@ func BuildSlackMessage(cfg config.Config, input Input, issueCount int, output ll
 			"type": "section",
 			"text": map[string]any{
 				"type": "mrkdwn",
-				"text": "*要点*\n• " + strings.Join(keyPoints, "\n• "),
+				"text": truncateSlackMarkdown("*要点*\n• "+strings.Join(keyPoints, "\n• "), 2800),
 			},
 		})
 	}
@@ -394,7 +394,7 @@ func BuildSlackMessage(cfg config.Config, input Input, issueCount int, output ll
 			"type": "section",
 			"text": map[string]any{
 				"type": "mrkdwn",
-				"text": "*注意項目*\n• " + strings.Join(riskLines, "\n• "),
+				"text": truncateSlackMarkdown("*注意項目*\n• "+strings.Join(riskLines, "\n• "), 2800),
 			},
 		})
 	}
@@ -543,17 +543,27 @@ func sanitizeRiskLines(items []llm.PeriodSummaryRiskItem) []string {
 }
 
 func truncateSlackMarkdown(value string, limit int) string {
-	if limit <= 0 || len(value) <= limit {
-		return value
-	}
-	return strings.TrimSpace(value[:limit-1]) + "…"
+	return truncateSlackText(value, limit)
 }
 
 func truncateSlackPlainText(value string, limit int) string {
-	if limit <= 0 || len(value) <= limit {
+	return truncateSlackText(value, limit)
+}
+
+func truncateSlackText(value string, limit int) string {
+	if limit <= 0 {
 		return value
 	}
-	return strings.TrimSpace(value[:limit-1]) + "…"
+
+	runeCount := 0
+	for index := range value {
+		if runeCount == limit-1 {
+			return strings.TrimSpace(value[:index]) + "…"
+		}
+		runeCount++
+	}
+
+	return value
 }
 
 func formatOptionalCount(value *int) string {

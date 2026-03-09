@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/soudai/BacklogTracker/internal/backlogclient"
 	"github.com/soudai/BacklogTracker/internal/config"
@@ -225,6 +226,58 @@ func TestServiceRunSendsSanitizedSlackMessage(t *testing.T) {
 	}
 	if got, want := notificationLogs[0].Status, "sent"; got != want {
 		t.Fatalf("notificationLogs[0].Status = %q, want %q", got, want)
+	}
+}
+
+func TestTruncateSlackTextPreservesUTF8(t *testing.T) {
+	t.Parallel()
+
+	value := "日本語の要約テキスト"
+	truncated := truncateSlackMarkdown(value, 5)
+	if !utf8.ValidString(truncated) {
+		t.Fatalf("truncateSlackMarkdown produced invalid UTF-8: %q", truncated)
+	}
+	if !strings.HasSuffix(truncated, "…") {
+		t.Fatalf("truncated = %q, want ellipsis suffix", truncated)
+	}
+}
+
+func TestBuildSlackMessageTruncatesJoinedSections(t *testing.T) {
+	t.Parallel()
+
+	output := llm.PeriodSummaryOutput{
+		ReportType: "period_summary",
+		Headline:   "headline",
+		Overview:   "overview",
+		KeyPoints:  []string{strings.Repeat("あ", 2000), strings.Repeat("い", 2000)},
+		RiskItems: []llm.PeriodSummaryRiskItem{
+			{IssueKey: "PROJ-1", Reason: strings.Repeat("う", 2000)},
+			{IssueKey: "PROJ-2", Reason: strings.Repeat("え", 2000)},
+		},
+		Counts: llm.PeriodSummaryCounts{Total: 2},
+	}
+
+	message := BuildSlackMessage(config.Config{BacklogProjectKey: "PROJ"}, Input{
+		From: time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2026, 3, 7, 0, 0, 0, 0, time.UTC),
+	}, 2, output)
+
+	var sectionTexts []string
+	for _, block := range message.Blocks {
+		text, ok := block["text"].(map[string]any)
+		if !ok {
+			continue
+		}
+		value, _ := text["text"].(string)
+		sectionTexts = append(sectionTexts, value)
+	}
+	if len(sectionTexts) < 3 {
+		t.Fatalf("sectionTexts = %d, want at least 3 text sections", len(sectionTexts))
+	}
+	for _, text := range sectionTexts {
+		if utf8.RuneCountInString(text) > 2800 {
+			t.Fatalf("section text length = %d, want <= 2800", utf8.RuneCountInString(text))
+		}
 	}
 }
 
