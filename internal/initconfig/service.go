@@ -9,23 +9,29 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/soudai/BacklogTracker/internal/backlogclient"
 	"github.com/soudai/BacklogTracker/internal/config"
 	"github.com/soudai/BacklogTracker/internal/migrations"
 )
 
 type Options struct {
-	BaseDir         string
-	EnvFile         string
-	ConfigOverrides map[string]string
-	NonInteractive  bool
-	Force           bool
-	SkipMigrate     bool
-	MigrateOnly     bool
-	Yes             bool
-	StdIn           io.Reader
-	StdOut          io.Writer
-	StdErr          io.Writer
-	Environ         []string
+	BaseDir              string
+	EnvFile              string
+	ConfigOverrides      map[string]string
+	NonInteractive       bool
+	Force                bool
+	SkipMigrate          bool
+	MigrateOnly          bool
+	Yes                  bool
+	StdIn                io.Reader
+	StdOut               io.Writer
+	StdErr               io.Writer
+	Environ              []string
+	NewConnectionChecker func(apiKey, baseURL string) (ConnectionChecker, error)
+}
+
+type ConnectionChecker interface {
+	CheckConnection(ctx context.Context, projectIDOrKey string) (backlogclient.Project, error)
 }
 
 func Run(ctx context.Context, opts Options) error {
@@ -111,6 +117,10 @@ func Run(ctx context.Context, opts Options) error {
 		}
 	}
 
+	if err := verifyBacklogConnection(ctx, cfg, opts.NewConnectionChecker); err != nil {
+		return err
+	}
+
 	if err := os.MkdirAll(filepath.Dir(targetEnvPath), 0o755); err != nil {
 		return fmt.Errorf("create env file directory: %w", err)
 	}
@@ -129,6 +139,32 @@ func Run(ctx context.Context, opts Options) error {
 
 	fmt.Fprintf(opts.StdOut, "initialized: env=%s provider=%s db=%s\n", opts.EnvFile, cfg.LLMProvider, cfg.SQLiteDBPath)
 	fmt.Fprintf(opts.StdOut, "next: backlog-tracker period-summary --project %s --from <from-date> --to <to-date> --provider %s\n", cfg.BacklogProjectKey, cfg.LLMProvider)
+	return nil
+}
+
+func verifyBacklogConnection(ctx context.Context, cfg config.Config, factory func(apiKey, baseURL string) (ConnectionChecker, error)) error {
+	if factory == nil {
+		factory = func(apiKey, baseURL string) (ConnectionChecker, error) {
+			return backlogclient.New(apiKey, baseURL)
+		}
+	}
+
+	checker, err := factory(cfg.BacklogAPIKey, cfg.BacklogBaseURL)
+	if err != nil {
+		return fmt.Errorf("create backlog connection checker: %w", err)
+	}
+
+	if _, err := checker.CheckConnection(ctx, cfg.BacklogProjectKey); err != nil {
+		switch {
+		case backlogclient.IsAuthenticationError(err):
+			return fmt.Errorf("backlog connection check failed: authentication error: %w", err)
+		case backlogclient.IsTemporaryError(err):
+			return fmt.Errorf("backlog connection check failed: temporary error: %w", err)
+		default:
+			return fmt.Errorf("backlog connection check failed: %w", err)
+		}
+	}
+
 	return nil
 }
 
