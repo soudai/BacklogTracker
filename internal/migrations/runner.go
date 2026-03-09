@@ -36,6 +36,9 @@ func ApplyAll(ctx context.Context, dbPath, dir string) error {
 		return fmt.Errorf("open sqlite database: %w", err)
 	}
 	defer db.Close()
+	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+		return fmt.Errorf("enable sqlite foreign keys: %w", err)
+	}
 
 	if _, err := db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS schema_migrations (

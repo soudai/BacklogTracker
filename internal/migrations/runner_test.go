@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -114,5 +115,39 @@ CREATE TABLE IF NOT EXISTS second_items (
 		if status.AppliedAt == nil {
 			t.Fatalf("status %s missing applied_at", status.Version)
 		}
+	}
+}
+
+func TestApplyAllEnforcesForeignKeys(t *testing.T) {
+	baseDir := t.TempDir()
+	dbPath := filepath.Join(baseDir, "tracker.sqlite3")
+	migrationDir := filepath.Join(baseDir, "migrations")
+	if err := os.MkdirAll(migrationDir, 0o755); err != nil {
+		t.Fatalf("create migration dir: %v", err)
+	}
+
+	migrationSQL := `
+CREATE TABLE IF NOT EXISTS parents (
+    id INTEGER PRIMARY KEY
+);
+
+CREATE TABLE IF NOT EXISTS children (
+    id INTEGER PRIMARY KEY,
+    parent_id INTEGER NOT NULL,
+    FOREIGN KEY(parent_id) REFERENCES parents(id)
+);
+
+INSERT INTO children(id, parent_id) VALUES (1, 999);
+`
+	if err := os.WriteFile(filepath.Join(migrationDir, "0001_fk.sql"), []byte(migrationSQL), 0o644); err != nil {
+		t.Fatalf("write migration file: %v", err)
+	}
+
+	err := ApplyAll(context.Background(), dbPath, migrationDir)
+	if err == nil {
+		t.Fatalf("ApplyAll expected foreign key failure")
+	}
+	if !strings.Contains(err.Error(), "FOREIGN KEY") {
+		t.Fatalf("ApplyAll error = %q, want foreign key failure", err.Error())
 	}
 }

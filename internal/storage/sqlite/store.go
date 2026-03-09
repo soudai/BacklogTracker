@@ -90,6 +90,10 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("ping sqlite database: %w", err)
 	}
+	if _, err := db.ExecContext(context.Background(), `PRAGMA foreign_keys = ON`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("enable sqlite foreign keys: %w", err)
+	}
 
 	return &Store{db: db}, nil
 }
@@ -236,6 +240,10 @@ VALUES(?, ?, ?, ?, ?, ?)`,
 }
 
 func (r *NotificationLogRepository) ListByJobID(ctx context.Context, jobID string) ([]NotificationLog, error) {
+	if strings.TrimSpace(jobID) == "" {
+		return nil, fmt.Errorf("job_id is required")
+	}
+
 	rows, err := r.db.QueryContext(ctx, `
 SELECT id, job_id, channel_type, destination, status, response_summary, sent_at
 FROM notification_logs
@@ -298,6 +306,10 @@ VALUES(?, ?, ?, ?, ?, ?, ?)`,
 }
 
 func (r *PromptRunRepository) ListByJobID(ctx context.Context, jobID string) ([]PromptRun, error) {
+	if strings.TrimSpace(jobID) == "" {
+		return nil, fmt.Errorf("job_id is required")
+	}
+
 	rows, err := r.db.QueryContext(ctx, `
 SELECT id, job_id, task_type, system_template, user_template, prompt_hash, rendered_prompt_path, created_at
 FROM prompt_runs

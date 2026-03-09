@@ -179,6 +179,22 @@ func TestGetByJobIDRejectsEmptyJobID(t *testing.T) {
 	}
 }
 
+func TestListByJobIDRejectsEmptyJobID(t *testing.T) {
+	notificationRepo := &NotificationLogRepository{}
+	if _, err := notificationRepo.ListByJobID(context.Background(), "   "); err == nil {
+		t.Fatalf("NotificationLogRepository.ListByJobID expected validation error")
+	} else if !strings.Contains(err.Error(), "job_id is required") {
+		t.Fatalf("NotificationLogRepository.ListByJobID error = %q, want validation message", err.Error())
+	}
+
+	promptRepo := &PromptRunRepository{}
+	if _, err := promptRepo.ListByJobID(context.Background(), "   "); err == nil {
+		t.Fatalf("PromptRunRepository.ListByJobID expected validation error")
+	} else if !strings.Contains(err.Error(), "job_id is required") {
+		t.Fatalf("PromptRunRepository.ListByJobID error = %q, want validation message", err.Error())
+	}
+}
+
 func TestScanJobRunWrapsScanError(t *testing.T) {
 	_, err := scanJobRun(scanStub{err: errors.New("boom")})
 	if err == nil {
@@ -186,6 +202,36 @@ func TestScanJobRunWrapsScanError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "scan job_run: boom") {
 		t.Fatalf("scanJobRun error = %q, want wrapped scan error", err.Error())
+	}
+}
+
+func TestStoreEnforcesForeignKeys(t *testing.T) {
+	ctx := context.Background()
+	baseDir := t.TempDir()
+	dbPath := filepath.Join(baseDir, "tracker.sqlite3")
+	migrationDir := filepath.Join(baseDir, "migrations")
+
+	writeInitialMigration(t, migrationDir)
+	if err := migrations.ApplyAll(ctx, dbPath, migrationDir); err != nil {
+		t.Fatalf("ApplyAll returned error: %v", err)
+	}
+
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open returned error: %v", err)
+	}
+	defer store.Close()
+
+	err = store.NotificationLogs().Save(ctx, NotificationLog{
+		JobID:       "missing-job",
+		ChannelType: "slack",
+		Status:      "sent",
+	})
+	if err == nil {
+		t.Fatalf("Save notification log expected foreign key error")
+	}
+	if !strings.Contains(err.Error(), "FOREIGN KEY") {
+		t.Fatalf("Save notification log error = %q, want foreign key failure", err.Error())
 	}
 }
 
