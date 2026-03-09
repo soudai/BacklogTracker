@@ -2,9 +2,11 @@ package sqlite
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -165,6 +167,28 @@ func TestInspectReturnsAppliedAndPendingVersions(t *testing.T) {
 	}
 }
 
+func TestGetByJobIDRejectsEmptyJobID(t *testing.T) {
+	repo := &JobRunRepository{}
+
+	_, err := repo.GetByJobID(context.Background(), "   ")
+	if err == nil {
+		t.Fatalf("GetByJobID expected validation error")
+	}
+	if !strings.Contains(err.Error(), "job_id is required") {
+		t.Fatalf("GetByJobID error = %q, want validation message", err.Error())
+	}
+}
+
+func TestScanJobRunWrapsScanError(t *testing.T) {
+	_, err := scanJobRun(scanStub{err: errors.New("boom")})
+	if err == nil {
+		t.Fatalf("scanJobRun expected error")
+	}
+	if !strings.Contains(err.Error(), "scan job_run: boom") {
+		t.Fatalf("scanJobRun error = %q, want wrapped scan error", err.Error())
+	}
+}
+
 func writeInitialMigration(t *testing.T, migrationDir string) {
 	t.Helper()
 
@@ -185,4 +209,12 @@ func writeInitialMigration(t *testing.T, migrationDir string) {
 	if err := os.WriteFile(filepath.Join(migrationDir, "0001_initial.sql"), content, 0o644); err != nil {
 		t.Fatalf("write migration file: %v", err)
 	}
+}
+
+type scanStub struct {
+	err error
+}
+
+func (s scanStub) Scan(_ ...any) error {
+	return s.err
 }

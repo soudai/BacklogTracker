@@ -188,6 +188,10 @@ WHERE job_id = ?`,
 }
 
 func (r *JobRunRepository) GetByJobID(ctx context.Context, jobID string) (JobRun, error) {
+	if strings.TrimSpace(jobID) == "" {
+		return JobRun{}, fmt.Errorf("job_id is required")
+	}
+
 	row := r.db.QueryRowContext(ctx, `
 SELECT id, job_id, job_type, provider, project_key, target_account, status, prompt_name, prompt_hash,
        issue_count, report_path, raw_response_path, error_message, started_at, finished_at
@@ -347,7 +351,7 @@ func scanJobRun(scanner interface{ Scan(dest ...any) error }) (JobRun, error) {
 		&startedAtRaw,
 		&finishedAtRaw,
 	); err != nil {
-		return JobRun{}, err
+		return JobRun{}, fmt.Errorf("scan job_run: %w", err)
 	}
 
 	startedAt, err := time.Parse(time.RFC3339, startedAtRaw)
