@@ -93,7 +93,11 @@ func TestClientListsProjectDataIssuesAndComments(t *testing.T) {
 					"id":          10,
 					"userId":      "alice",
 					"name":        "Alice",
+					"keyword":     "Alice Example",
 					"mailAddress": "alice@example.com",
+					"nulabAccount": map[string]any{
+						"uniqueId": "alice-example",
+					},
 				},
 			})
 		case "/api/v2/projects/PROJ/statuses":
@@ -231,6 +235,9 @@ func TestClientListsProjectDataIssuesAndComments(t *testing.T) {
 	if len(users) != 1 || users[0].UserID != "alice" {
 		t.Fatalf("ListProjectUsers = %#v, want one alice user", users)
 	}
+	if got, want := users[0].UniqueID, "alice-example"; got != want {
+		t.Fatalf("users[0].UniqueID = %q, want %q", got, want)
+	}
 
 	statuses, err := client.ListProjectStatuses(context.Background(), "PROJ")
 	if err != nil {
@@ -337,6 +344,23 @@ func TestClientClassifiesHTTPFailures(t *testing.T) {
 				t.Fatalf("IsTemporaryError(%v) = %t, want %t", err, got, testCase.wantTemporary)
 			}
 		})
+	}
+}
+
+func TestBuildProjectUsersURLPreservesBaseSubpath(t *testing.T) {
+	t.Parallel()
+
+	client := &Client{
+		baseURL: "https://example.backlog.com/backlog",
+		apiKey:  "test-key",
+	}
+
+	got, err := client.buildProjectUsersURL("PROJ")
+	if err != nil {
+		t.Fatalf("buildProjectUsersURL returned error: %v", err)
+	}
+	if got != "https://example.backlog.com/backlog/api/v2/projects/PROJ/users?apiKey=test-key" {
+		t.Fatalf("buildProjectUsersURL = %q", got)
 	}
 }
 
