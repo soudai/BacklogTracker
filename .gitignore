@@ -18,6 +18,7 @@ coverage.*
 *.coverprofile
 profile.cov
 .gocache/
+.tmp/
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
