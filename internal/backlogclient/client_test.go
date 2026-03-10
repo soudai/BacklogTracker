@@ -93,7 +93,11 @@ func TestClientListsProjectDataIssuesAndComments(t *testing.T) {
 					"id":          10,
 					"userId":      "alice",
 					"name":        "Alice",
+					"keyword":     "Alice Example",
 					"mailAddress": "alice@example.com",
+					"nulabAccount": map[string]any{
+						"uniqueId": "alice-example",
+					},
 				},
 			})
 		case "/api/v2/projects/PROJ/statuses":
@@ -230,6 +234,9 @@ func TestClientListsProjectDataIssuesAndComments(t *testing.T) {
 	}
 	if len(users) != 1 || users[0].UserID != "alice" {
 		t.Fatalf("ListProjectUsers = %#v, want one alice user", users)
+	}
+	if got, want := users[0].UniqueID, "alice-example"; got != want {
+		t.Fatalf("users[0].UniqueID = %q, want %q", got, want)
 	}
 
 	statuses, err := client.ListProjectStatuses(context.Background(), "PROJ")

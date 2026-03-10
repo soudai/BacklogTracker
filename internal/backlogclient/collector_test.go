@@ -12,7 +12,7 @@ func TestCollectorResolveAssignee(t *testing.T) {
 
 	collector := NewCollector(&fakeCollectorAPI{
 		users: []User{
-			{ID: 10, UserID: "alice", Name: "Alice"},
+			{ID: 10, UserID: "alice", UniqueID: "taketomo-sone", Name: "Alice", MailAddress: "taketomo-sone@example.com"},
 			{ID: 20, UserID: "bob", Name: "Bob"},
 		},
 	})
@@ -31,6 +31,22 @@ func TestCollectorResolveAssignee(t *testing.T) {
 	}
 	if got, want := user.UserID, "bob"; got != want {
 		t.Fatalf("user.UserID = %q, want %q", got, want)
+	}
+
+	user, err = collector.ResolveAssignee(context.Background(), "PROJ", "taketomo-sone")
+	if err != nil {
+		t.Fatalf("ResolveAssignee returned error: %v", err)
+	}
+	if got, want := user.ID, 10; got != want {
+		t.Fatalf("user.ID = %d, want %d", got, want)
+	}
+
+	user, err = collector.ResolveAssignee(context.Background(), "PROJ", "taketomo-sone@example.com")
+	if err != nil {
+		t.Fatalf("ResolveAssignee returned error: %v", err)
+	}
+	if got, want := user.ID, 10; got != want {
+		t.Fatalf("user.ID = %d, want %d", got, want)
 	}
 }
 

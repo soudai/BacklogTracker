@@ -2,6 +2,7 @@ package backlogclient
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -35,7 +36,9 @@ type Project struct {
 type User struct {
 	ID          int
 	UserID      string
+	UniqueID    string
 	Name        string
+	Keyword     string
 	MailAddress string
 }
 
@@ -95,7 +98,10 @@ type apiClient interface {
 }
 
 type Client struct {
-	api apiClient
+	api        apiClient
+	httpClient *http.Client
+	baseURL    string
+	apiKey     string
 }
 
 func WithHTTPClient(client *http.Client) Option {
@@ -130,7 +136,12 @@ func New(apiKey, baseURL string, options ...Option) (*Client, error) {
 		backlog.OptionHTTPClient(&statusCheckingHTTPClient{client: settings.httpClient}),
 	)
 
-	return &Client{api: client}, nil
+	return &Client{
+		api:        client,
+		httpClient: settings.httpClient,
+		baseURL:    normalizedBaseURL,
+		apiKey:     apiKey,
+	}, nil
 }
 
 func NormalizeBaseURL(raw string) (string, error) {
@@ -184,14 +195,44 @@ func (c *Client) ListProjectUsers(ctx context.Context, projectIDOrKey string) ([
 		return nil, fmt.Errorf("projectIDOrKey is required")
 	}
 
-	users, err := c.api.GetProjectUsersContext(ctx, projectIDOrKey, nil)
+	requestURL, err := c.buildProjectUsersURL(projectIDOrKey)
+	if err != nil {
+		return nil, err
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build project users request for %s: %w", projectIDOrKey, err)
+	}
+
+	response, err := c.httpClient.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("get project users for %s: %w", projectIDOrKey, err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode/100 != 2 {
+		bodySummary, readErr := summarizeErrorBody(response.Body)
+		if readErr != nil {
+			bodySummary = "read error response body failed"
+		}
+		return nil, fmt.Errorf("get project users for %s: %w", projectIDOrKey, &HTTPStatusError{
+			Status:     response.Status,
+			StatusCode: response.StatusCode,
+			Method:     request.Method,
+			URL:        sanitizeURL(request.URL.String()),
+			Body:       bodySummary,
+		})
+	}
+
+	var users []projectUserResponse
+	if err := json.NewDecoder(response.Body).Decode(&users); err != nil {
+		return nil, fmt.Errorf("decode project users for %s: %w", projectIDOrKey, err)
 	}
 
 	mapped := make([]User, 0, len(users))
 	for _, user := range users {
-		mapped = append(mapped, mapUser(user))
+		mapped = append(mapped, user.toUser())
 	}
 	return mapped, nil
 }
@@ -380,6 +421,32 @@ func mapUser(user *backlog.User) User {
 	}
 }
 
+type projectUserResponse struct {
+	ID           int    `json:"id"`
+	UserID       string `json:"userId"`
+	Name         string `json:"name"`
+	Keyword      string `json:"keyword"`
+	MailAddress  string `json:"mailAddress"`
+	NulabAccount *struct {
+		UniqueID string `json:"uniqueId"`
+	} `json:"nulabAccount"`
+}
+
+func (u projectUserResponse) toUser() User {
+	uniqueID := ""
+	if u.NulabAccount != nil {
+		uniqueID = strings.TrimSpace(u.NulabAccount.UniqueID)
+	}
+	return User{
+		ID:          u.ID,
+		UserID:      strings.TrimSpace(u.UserID),
+		UniqueID:    uniqueID,
+		Name:        strings.TrimSpace(u.Name),
+		Keyword:     strings.TrimSpace(u.Keyword),
+		MailAddress: strings.TrimSpace(u.MailAddress),
+	}
+}
+
 func mapStatus(status *backlog.Status) Status {
 	if status == nil {
 		return Status{}
@@ -501,4 +568,23 @@ func summarizeErrorBody(body io.Reader) (string, error) {
 	}
 	summary := strings.Join(strings.Fields(string(data)), " ")
 	return summary, nil
+}
+
+func (c *Client) buildProjectUsersURL(projectIDOrKey string) (string, error) {
+	if strings.TrimSpace(c.baseURL) == "" {
+		return "", fmt.Errorf("backlog base URL is not configured")
+	}
+	if strings.TrimSpace(c.apiKey) == "" {
+		return "", fmt.Errorf("backlog api key is not configured")
+	}
+
+	parsed, err := url.Parse(c.baseURL)
+	if err != nil {
+		return "", fmt.Errorf("parse backlog base URL: %w", err)
+	}
+	parsed.Path = path.Join(parsed.Path, "/api/v2/projects", url.PathEscape(strings.TrimSpace(projectIDOrKey)), "users")
+	query := parsed.Query()
+	query.Set("apiKey", c.apiKey)
+	parsed.RawQuery = query.Encode()
+	return parsed.String(), nil
 }

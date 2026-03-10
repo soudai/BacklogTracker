@@ -59,10 +59,7 @@ func (c *Collector) ResolveAssignee(ctx context.Context, projectIDOrKey, account
 
 	target := strings.TrimSpace(account)
 	for _, user := range users {
-		if strings.EqualFold(user.UserID, target) {
-			return user, nil
-		}
-		if user.ID > 0 && strconv.Itoa(user.ID) == target {
+		if userMatchesAccount(user, target) {
 			return user, nil
 		}
 	}
@@ -88,4 +85,23 @@ func (c *Collector) CollectAssigneeIssues(ctx context.Context, input AssigneeIss
 		To:             input.To,
 		PageSize:       input.PageSize,
 	})
+}
+
+func userMatchesAccount(user User, target string) bool {
+	if strings.EqualFold(user.UserID, target) {
+		return true
+	}
+	if strings.EqualFold(user.UniqueID, target) {
+		return true
+	}
+	if strings.EqualFold(user.Name, target) {
+		return true
+	}
+	if strings.EqualFold(user.MailAddress, target) {
+		return true
+	}
+	if localPart, _, ok := strings.Cut(user.MailAddress, "@"); ok && strings.EqualFold(localPart, target) {
+		return true
+	}
+	return user.ID > 0 && strconv.Itoa(user.ID) == target
 }
