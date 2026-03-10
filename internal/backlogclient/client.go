@@ -582,7 +582,7 @@ func (c *Client) buildProjectUsersURL(projectIDOrKey string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("parse backlog base URL: %w", err)
 	}
-	parsed.Path = path.Join(parsed.Path, "/api/v2/projects", url.PathEscape(strings.TrimSpace(projectIDOrKey)), "users")
+	parsed.Path = path.Join(parsed.Path, "api/v2/projects", url.PathEscape(strings.TrimSpace(projectIDOrKey)), "users")
 	query := parsed.Query()
 	query.Set("apiKey", c.apiKey)
 	parsed.RawQuery = query.Encode()

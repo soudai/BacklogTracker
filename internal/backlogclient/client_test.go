@@ -347,6 +347,23 @@ func TestClientClassifiesHTTPFailures(t *testing.T) {
 	}
 }
 
+func TestBuildProjectUsersURLPreservesBaseSubpath(t *testing.T) {
+	t.Parallel()
+
+	client := &Client{
+		baseURL: "https://example.backlog.com/backlog",
+		apiKey:  "test-key",
+	}
+
+	got, err := client.buildProjectUsersURL("PROJ")
+	if err != nil {
+		t.Fatalf("buildProjectUsersURL returned error: %v", err)
+	}
+	if got != "https://example.backlog.com/backlog/api/v2/projects/PROJ/users?apiKey=test-key" {
+		t.Fatalf("buildProjectUsersURL = %q", got)
+	}
+}
+
 func writeJSON(t *testing.T, w http.ResponseWriter, value any) {
 	t.Helper()
 
